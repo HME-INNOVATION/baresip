@@ -50,6 +50,7 @@ set(MODULES
   mwi
   natpmp
   netroam
+  nexeo_ib
   opensles
   opus
   opus_multistream
