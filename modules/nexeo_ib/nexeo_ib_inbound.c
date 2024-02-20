@@ -1,4 +1,3 @@
-/// WORKING
 /**
  * @file nexeo_ib_inbound.c
  * Nexeo IB audio, inbound (RTP -> baresip).

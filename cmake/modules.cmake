@@ -51,6 +51,7 @@ set(MODULES
   natpmp
   netroam
   nexeo_ib
+  nexeo_zms
   opensles
   opus
   opus_multistream
