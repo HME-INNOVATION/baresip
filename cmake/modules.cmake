@@ -51,6 +51,7 @@ set(MODULES
   natpmp
   netroam
   nexeo_ib
+  nexeo_mqtt
   nexeo_zms
   opensles
   opus
