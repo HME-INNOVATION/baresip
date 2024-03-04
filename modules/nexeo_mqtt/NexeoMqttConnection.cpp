@@ -3,7 +3,6 @@
 
 // System and Library Includes
 #include <json.hpp>
-#include <re.h>
 #include <baresip.h>
 #include <mosquitto.h>
 #include <stdexcept>
@@ -17,6 +16,8 @@ NexeoMqttConnection::NexeoMqttConnection()
     mPort(1883),
     mBaseTopic("nexeo_mqtt")
 {
+	tmr_init(&mTimer);
+
     mosquitto_lib_init();
 
     // Load our configuration options.
@@ -56,6 +57,8 @@ NexeoMqttConnection::NexeoMqttConnection()
 // ---------------------------------------------------------------------------
 NexeoMqttConnection::~NexeoMqttConnection()
 {
+	tmr_cancel(&mTimer);
+
     if (mInstance)
     {
         mosquitto_disconnect(mInstance);
@@ -116,39 +119,112 @@ void NexeoMqttConnection::publish(
 }
 
 // ---------------------------------------------------------------------------
+// Gets a configuration item as a string.
+// ---------------------------------------------------------------------------
+template <>
+std::string NexeoMqttConnection::getConfig(
+    const std::string& aPrimaryConfig,
+    const std::string& aSecondaryConfig,
+    const std::string& aDefaultValue)
+{
+    std::string temp(256, 0);
+
+    if (conf_get_str(
+            conf_cur(),
+            aPrimaryConfig.c_str(),
+            const_cast<char*>(temp.data()),
+            temp.length()) != 0 &&
+        !aSecondaryConfig.empty() &&
+        conf_get_str(
+            conf_cur(),
+            aSecondaryConfig.c_str(),
+            const_cast<char*>(temp.data()),
+            temp.length()) != 0)
+    {
+        return aDefaultValue;
+    }
+
+    temp.erase(temp.find('\0'));
+    return temp;
+}
+
+// ---------------------------------------------------------------------------
+// Gets a configuration item as an unsigned integer.
+// ---------------------------------------------------------------------------
+template<typename T>
+T NexeoMqttConnection::getConfig(
+    const std::string& aPrimaryConfig,
+    const std::string& aSecondaryConfig,
+    const T& aDefaultValue)
+{
+    uint32_t temp;
+
+    if (conf_get_u32(
+            conf_cur(),
+            aPrimaryConfig.c_str(),
+            &temp) != 0 &&
+        !aSecondaryConfig.empty() &&
+        conf_get_u32(
+            conf_cur(),
+            aPrimaryConfig.c_str(),
+            &temp) != 0)
+    {
+        return aDefaultValue;
+    }
+
+    if (temp < std::numeric_limits<T>::min() ||
+        temp > std::numeric_limits<T>::max())
+    {
+        return aDefaultValue;
+    }
+
+    return static_cast<T>(temp);
+}
+
+// ---------------------------------------------------------------------------
 // Loads the MQTT configuration from the application config, and validates
 // the values.
 // ---------------------------------------------------------------------------
 void NexeoMqttConnection::loadConfig()
 {
     // Get configuration values.
-    getConfig("mqtt_broker_host", mHost);
-    getConfig("mqtt_broker_cafile", mCaFile);
-    getConfig("mqtt_broker_user", mUsername);
-    getConfig("mqtt_broker_password", mPassword);
-    getConfig("mqtt_broker_clientid", mClientId);
-    getConfig("mqtt_basetopic", mBaseTopic);
-    getConfig("mqtt_publishtopic", mPublishTopic);
-    uint32_t temp;
-    getConfig("mqtt_broker_port", temp);
-
-    // Validate configuration values.
-    if (temp < 65536)
-    {
-        mPort = static_cast<uint16_t>(temp);
-    }
-    else
-    {
-        throw std::runtime_error("Invalid port value");
-    }
+    mHost = getConfig<std::string>(
+        "nexeo_mqtt_broker_host",
+        "mqtt_broker_host",
+        "127.0.0.1");
+    mPort = getConfig<uint16_t>(
+        "nexeo_mqtt_broker_port",
+        "mqtt_broker_port",
+        1883);
+    mCaFile = getConfig<std::string>(
+        "nexeo_mqtt_broker_cafile",
+        "mqtt_broker_cafile",
+        "");
+    mUsername = getConfig<std::string>(
+        "nexeo_mqtt_broker_user",
+        "mqtt_broker_user",
+        "");
+    mPassword = getConfig<std::string>(
+        "nexeo_mqtt_broker_password",
+        "mqtt_broker_password",
+        "");
+    mClientId = getConfig<std::string>(
+        "nexeo_mqtt_broker_clientid",
+        "", // don't fall back to share a client id with mqtt.so
+        "");
+    mBaseTopic = getConfig<std::string>(
+        "nexeo_mqtt_basetopic",
+        "mqtt_basetopic",
+        "nexeo_mqtt");
+    mPublishTopic = getConfig<std::string>(
+        "nexeo_mqtt_publishtopic",
+        "mqtt_publishtopic",
+        "");
 
     // Set appropriate defaults.
     if (mPublishTopic.empty())
     {
-        mPublishTopic =
-            std::string("/") +
-            mBaseTopic +
-            std::string("/event");
+        mPublishTopic = mBaseTopic + "/event";
     }
 
     info(
@@ -182,39 +258,41 @@ void NexeoMqttConnection::setConnectionOptions()
     {
         throw std::runtime_error("Could not set CA");
     }
+
+	mosquitto_disconnect_callback_set(
+        mInstance,
+        [](struct mosquitto* aInstance, void* aObj, int aError)
+        {
+            auto self = static_cast<NexeoMqttConnection*>(aObj);
+            self->reconnect();
+        });
 }
 
 // ---------------------------------------------------------------------------
-// Gets a configuration item as a string.
+// Reconnects to the broker if the connection is lost.
 // ---------------------------------------------------------------------------
-void NexeoMqttConnection::getConfig(
-    const std::string& aConfig,
-    std::string& aTarget)
+void NexeoMqttConnection::reconnect()
 {
-    std::string temp(256, 0);
-    if (conf_get_str(
-            conf_cur(),
-            aConfig.c_str(),
-            const_cast<char*>(temp.data()),
-            temp.length()) != 0)
+	auto err = mosquitto_reconnect(mInstance);
+	if (err == MOSQ_ERR_SUCCESS)
     {
+        info(
+            "nexeo_mqtt: reconnected to %s:%d as '%s'\n",
+            mHost.c_str(),
+            mPort,
+            mClientId.c_str());
         return;
     }
 
-    temp.erase(temp.find('\0'));
-    aTarget = std::move(temp);
-}
-
-// ---------------------------------------------------------------------------
-// Gets a configuration item as an unsigned integer.
-// ---------------------------------------------------------------------------
-void NexeoMqttConnection::getConfig(
-    const std::string& aConfig,
-    uint32_t& aTarget)
-{
-    conf_get_u32(
-        conf_cur(),
-        aConfig.c_str(),
-        &aTarget);
+    warning("nexeo_mqtt: reconnect failed, retrying\n");
+    tmr_start(
+        &mTimer,
+        2000,
+        [](void* aObj)
+        {
+            auto self = static_cast<NexeoMqttConnection*>(aObj);
+            self->reconnect();
+        },
+        this);
 }
 

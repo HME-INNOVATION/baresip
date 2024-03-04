@@ -3,6 +3,7 @@
 // System and Library Includes
 #include <cstdint>
 #include <json_fwd.hpp>
+#include <re.h>
 #include <string>
 
 // Forward Declarations
@@ -28,13 +29,12 @@ public:
 
 private:
     void loadConfig();
-    void getConfig(
-        const std::string& aConfig,
-        std::string& aTarget);
-    void getConfig(
-        const std::string& aConfig,
-        uint32_t& aTarget);
+    template <typename T> T getConfig(
+        const std::string& aPrimaryConfig,
+        const std::string& aSecondaryConfig,
+        const T& aDefaultValue);
     void setConnectionOptions();
+    void reconnect();
 
 private:
     struct mosquitto* mInstance;
@@ -46,5 +46,6 @@ private:
     std::string mClientId;
     std::string mBaseTopic;
     std::string mPublishTopic;
+    struct tmr mTimer;
 };
 
