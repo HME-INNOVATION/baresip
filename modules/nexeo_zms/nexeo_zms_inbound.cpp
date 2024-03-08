@@ -156,18 +156,11 @@ NexeoZmsInbound::NexeoZmsInbound(
 
     m_run = true;
 
-    // TODO: probably need this to be common somewhere
-    // unless we can verify that ZMS can handle dup addresses
-    zms::Address logicalAddr(
-        zms::BS7000,
-        1,
-        zms::A15,
-        ZMS_WILDCARD,
-        zms::SPM_OUTAUD);
+    std::string connectionId =
+        std::string("baresip zms_inbound") +
+        std::string(device);
 
-    mZmsAgent = std::make_shared<zms::LinuxAgent>(
-        "baresip zms_inbound",
-        &logicalAddr);
+    mZmsAgent = std::make_shared<zms::LinuxAgent>(connectionId);
     err = mZmsAgent->init();
     if (err)
     {

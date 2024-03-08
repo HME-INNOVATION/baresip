@@ -7,7 +7,9 @@
 #include <json.hpp>
 #include <list>
 #include <string>
+#include <sys/types.h>
 #include <tuple>
+#include <unistd.h>
 #include <ZMS.hpp>
 #include <ZMS_MsgTypes.h>
 #include <zoltar_sids.h>
@@ -35,18 +37,11 @@ NexeoMqttPublisher::NexeoMqttPublisher(
 :   mMqttConnection(aMqttConnection),
     mRun(true)
 {
-    // TODO: probably need this to be common somewhere
-    // unless we can verify that ZMS can handle dup addresses
-    zms::Address logicalAddr(
-        zms::BS7000,
-        1,
-        zms::A15,
-        ZMS_WILDCARD,
-        zms::SPM_OUTAUD);
+    std::string connectionId =
+        std::string("baresip mqtt_publish ") +
+        std::to_string(getpid());
 
-    mZmsAgent = std::make_shared<zms::LinuxAgent>(
-        "baresip mqtt_publish",
-        &logicalAddr);
+    mZmsAgent = std::make_shared<zms::LinuxAgent>(connectionId);
     if (mZmsAgent->init())
     {
         throw std::runtime_error("Could not create ZMS agent");
