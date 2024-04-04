@@ -2,10 +2,13 @@
 #include "NexeoMqttConnection.h"
 
 // System and Library Includes
-#include <json.hpp>
+#include "json.hpp"
 #include <baresip.h>
 #include <mosquitto.h>
 #include <stdexcept>
+
+// Local Includes
+#include "NexeoMqttSubscriber.h"
 
 // ---------------------------------------------------------------------------
 // Constructor.
@@ -14,7 +17,9 @@ NexeoMqttConnection::NexeoMqttConnection()
 :   mInstance(nullptr),
     mHost("127.0.0.1"),
     mPort(1883),
-    mBaseTopic("nexeo_mqtt")
+    mBaseTopic("nexeo_mqtt"),
+    mRunning(true),
+    mSubscriber(nullptr)
 {
 	tmr_init(&mTimer);
 
@@ -37,13 +42,19 @@ NexeoMqttConnection::NexeoMqttConnection()
     setConnectionOptions();
 
     // Connect to the broker.
-    if (mosquitto_connect(
-            mInstance,
-            mHost.c_str(),
-            mPort,
-            60) != MOSQ_ERR_SUCCESS)
+    auto err = mosquitto_connect(
+        mInstance,
+        mHost.c_str(),
+        mPort,
+        60);
+    if (err == MOSQ_ERR_INVAL)
     {
         throw std::runtime_error("Could not connect to broker");
+    }
+    else if (err != MOSQ_ERR_SUCCESS)
+    {
+        // NB: All other errors should be recoverable by retrying.
+        reconnect();
     }
 
     if (mosquitto_loop_start(mInstance) != MOSQ_ERR_SUCCESS)
@@ -57,6 +68,8 @@ NexeoMqttConnection::NexeoMqttConnection()
 // ---------------------------------------------------------------------------
 NexeoMqttConnection::~NexeoMqttConnection()
 {
+    mRunning = false;
+
 	tmr_cancel(&mTimer);
 
     if (mInstance)
@@ -99,12 +112,26 @@ void NexeoMqttConnection::publish(
 }
 
 // ---------------------------------------------------------------------------
+// Sets the subscriber object.
+// ---------------------------------------------------------------------------
+void NexeoMqttConnection::setSubscriber(
+    NexeoMqttSubscriber* aSubscriber)
+{
+    mSubscriber = aSubscriber;
+}
+
+// ---------------------------------------------------------------------------
 // Publishes a string payload to the specified topic.
 // ---------------------------------------------------------------------------
 void NexeoMqttConnection::publish(
     const std::string& aTopic,
     const std::string& aPayload)
 {
+    if (!mRunning)
+    {
+        return;
+    }
+
     if (mosquitto_publish(
             mInstance,
             nullptr,
@@ -220,6 +247,10 @@ void NexeoMqttConnection::loadConfig()
         "nexeo_mqtt_publishtopic",
         "mqtt_publishtopic",
         "");
+    mSubscribeTopic = getConfig<std::string>(
+        "nexeo_mqtt_subscribetopic",
+        "mqtt_subscribetopic",
+        "");
 
     // Set appropriate defaults.
     if (mPublishTopic.empty())
@@ -227,12 +258,20 @@ void NexeoMqttConnection::loadConfig()
         mPublishTopic = mBaseTopic + "/event";
     }
 
+    if (mSubscribeTopic.empty())
+    {
+        mSubscribeTopic = mBaseTopic + "/command/+";
+    }
+
     info(
-        "nexeo_mqtt: Connecting to %s:%d as '%s', publishing on: %s\n",
+        "nexeo_mqtt: Connecting to %s:%d as '%s', "
+        "publishing on: %s, "
+        "subscribing on: %s\n",
         mHost.c_str(),
         mPort,
         mClientId.c_str(),
-        mPublishTopic.c_str());
+        mPublishTopic.c_str(),
+        mSubscribeTopic.c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -259,12 +298,29 @@ void NexeoMqttConnection::setConnectionOptions()
         throw std::runtime_error("Could not set CA");
     }
 
+	mosquitto_connect_callback_set(
+        mInstance,
+        [](struct mosquitto* aInstance, void* aObj, int aError)
+        {
+            auto self = static_cast<NexeoMqttConnection*>(aObj);
+            self->subscribe();
+        });
 	mosquitto_disconnect_callback_set(
         mInstance,
         [](struct mosquitto* aInstance, void* aObj, int aError)
         {
             auto self = static_cast<NexeoMqttConnection*>(aObj);
             self->reconnect();
+        });
+	mosquitto_message_callback_set(
+        mInstance,
+        [](struct mosquitto* aInstance, void* aObj, const struct mosquitto_message* aMessage)
+        {
+            auto self = static_cast<NexeoMqttConnection*>(aObj);
+            std::string message(
+                static_cast<const char*>(aMessage->payload),
+                aMessage->payloadlen);
+            self->handleMessage(aMessage->topic, message);
         });
 }
 
@@ -273,6 +329,11 @@ void NexeoMqttConnection::setConnectionOptions()
 // ---------------------------------------------------------------------------
 void NexeoMqttConnection::reconnect()
 {
+    if (!mRunning)
+    {
+        return;
+    }
+
 	auto err = mosquitto_reconnect(mInstance);
 	if (err == MOSQ_ERR_SUCCESS)
     {
@@ -294,5 +355,61 @@ void NexeoMqttConnection::reconnect()
             self->reconnect();
         },
         this);
+}
+
+// ---------------------------------------------------------------------------
+// Subscribes to the MQTT topic.
+// ---------------------------------------------------------------------------
+void NexeoMqttConnection::subscribe()
+{
+    if (!mRunning)
+    {
+        return;
+    }
+
+    auto err = mosquitto_subscribe(
+        mInstance,
+        nullptr,
+        mSubscribeTopic.c_str(),
+        0);
+
+	if (err != MOSQ_ERR_SUCCESS)
+    {
+        warning("nexeo_mqtt: failed to subscribe: %d\n", err);
+        return;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Handles reception of an MQTT message.
+// ---------------------------------------------------------------------------
+void NexeoMqttConnection::handleMessage(
+    const std::string& aTopic,
+    const std::string& aMessage)
+{
+    if (!mRunning)
+    {
+        return;
+    }
+
+	bool match = false;
+	mosquitto_topic_matches_sub(
+        mSubscribeTopic.c_str(),
+        aTopic.c_str(),
+        &match);
+    if (!match)
+    {
+        debug(
+            "nexeo_mqtt: Ignoring message, topic mismatch: '%s' '%s'\n",
+            aTopic.c_str(),
+            aMessage.c_str());
+        return;
+    }
+
+    // Pass the message off to the subscriber object.
+    if (mSubscriber)
+    {
+        mSubscriber->rxMessage(aTopic, aMessage);
+    }
 }
 

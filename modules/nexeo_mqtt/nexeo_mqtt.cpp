@@ -14,12 +14,14 @@
 
 #include "NexeoMqttConnection.h"
 #include "NexeoMqttPublisher.h"
+#include "NexeoMqttSubscriber.h"
 
 // ---------------------------------------------------------------------------
 // Globals
 // ---------------------------------------------------------------------------
 static NexeoMqttConnection* gConnection = nullptr;
 static NexeoMqttPublisher* gPublisher = nullptr;
+static NexeoMqttSubscriber* gSubscriber = nullptr;
 
 // ---------------------------------------------------------------------------
 // Initializes the module.
@@ -32,6 +34,7 @@ static int module_nexeo_mqtt_init(void)
     {
         gConnection = new NexeoMqttConnection();
         gPublisher = new NexeoMqttPublisher(*gConnection);
+        gSubscriber = new NexeoMqttSubscriber(*gConnection);
     }
     catch (std::exception& e)
     {
@@ -48,6 +51,7 @@ static int module_nexeo_mqtt_init(void)
 static int module_nexeo_mqtt_close(void)
 {
     delete gPublisher;
+    delete gSubscriber;
     delete gConnection;
 
     return 0;

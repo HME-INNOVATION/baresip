@@ -4,7 +4,7 @@
 // System and Library Includes
 #include <re.h>
 #include <baresip.h>
-#include <json.hpp>
+#include "json.hpp"
 #include <list>
 #include <string>
 #include <sys/types.h>
@@ -26,7 +26,9 @@ static const std::list<std::tuple<int, int>> kMessageSubscriptions =
 //    { zms::MSG_CREW_GRP_TALK_STOP, ZMS_WILDCARD },
     { zms::MSG_OT_TO_CT_START, ZMS_WILDCARD },
     { zms::MSG_OT_TO_CT_STOP, ZMS_WILDCARD },
-    { /* HEADSET BUTTON EVENTS */ 1275, ZMS_WILDCARD }
+    { /* MSG_BOSS_GROUPS_STATUS */ 1263, ZMS_WILDCARD },
+    { /* MSG_BOSS_BUTTON_EVENT */ 1265, ZMS_WILDCARD },
+    { zms::MSG_USER_HEADSET_AVAIL_STATUS, ZMS_WILDCARD }
 };
 
 // ---------------------------------------------------------------------------
@@ -130,11 +132,80 @@ void NexeoMqttPublisher::rxMessage()
             }
             */
 
-            case /* HEADSET BUTTON EVENTS */ 1275:
+            case /* MSG_BOSS_GROUPS_STATUS */ 1263:
+            {
+                payload = {};
+
+                // TODO: message structure
+                if (rxMsg.data.empty() ||
+                    rxMsg.data[0] == 0)
+                {
+                    // Can't parse an empty payload.
+                    break;
+                }
+
+                size_t expectedPayloadLength =
+                    1 +
+                    2 * static_cast<uint8_t>(rxMsg.data[0]);
+
+                if (rxMsg.data.size() < expectedPayloadLength)
+                {
+                    // Can't parse an invalid payload.
+                    warning(
+                        "mqtt_publish: invalid payload for "
+                        "MSG_BOSS_GROUPS_STATUS, "
+                        "expected %d bytes, have %d bytes\n",
+                        expectedPayloadLength,
+                        rxMsg.data.size());
+                    break;
+                }
+
+                size_t offset = 1;
+                for (auto i = 0; i < rxMsg.data[0]; i++)
+                {
+                    payload.push_back(nlohmann::json::object(
+                    {
+                        {
+                            "headset_id",
+                            static_cast<unsigned int>(rxMsg.data[offset++])
+                        },
+                        {
+                            "group_id",
+                            static_cast<unsigned int>(rxMsg.data[offset++])
+                        }
+                    }));
+                }
+                break;
+            }
+
+            case /* MSG_BOSS_BUTTON_EVENT */ 1265:
+            {
+                struct PPBtnSim
+                {
+                    uint32_t ppID;
+                    uint32_t btnID;
+                    uint32_t interval;
+                };
+
+                if (rxMsg.data.size() < sizeof(PPBtnSim))
+                {
+                    break;
+                }
+
+                auto buttonData = reinterpret_cast<const PPBtnSim*>(
+                    rxMsg.data.data());
+                payload["headset_id"] = buttonData->ppID;
+                payload["button"] = buttonData->btnID;
+                break;
+            }
+
+            case zms::MSG_USER_HEADSET_AVAIL_STATUS:
             {
                 auto messageData = nlohmann::json::parse(rxMsg.data);
                 payload["headset_id"] = messageData["headset_id"];
-                payload["button"] = messageData["button"];
+                // TODO: do we want to re-map the values from
+                // eHeadsetAvailStatus?
+                payload["status"] = messageData["status"];
                 break;
             }
 

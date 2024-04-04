@@ -14,7 +14,7 @@ endif()
 list(APPEND MODULES_DETECTED ${PROJECT_NAME})
 set(MODULES_DETECTED ${MODULES_DETECTED} PARENT_SCOPE)
 
-set(SRCS nexeo_mqtt.cpp NexeoMqttConnection.cpp NexeoMqttPublisher.cpp)
+set(SRCS nexeo_mqtt.cpp NexeoMqttConnection.cpp NexeoMqttPublisher.cpp NexeoMqttSubscriber.cpp)
 
 if(STATIC)
     add_library(${PROJECT_NAME} OBJECT ${SRCS})
