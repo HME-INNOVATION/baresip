@@ -54,7 +54,7 @@ private:
         GstBuffer* buffer,
         GstPad* pad,
         gpointer user_data);
-    void parseDeviceMessage(
+    void parseDeviceHeadset(
         const char* device);
 
 private:
@@ -67,7 +67,7 @@ private:
     size_t m_sampc;
     uint32_t m_ptime;
     int16_t* m_buf;
-    int m_msg;
+    int m_ppid;
     std::shared_ptr<zms::LinuxAgent> mZmsAgent;
     std::shared_ptr<std::thread> mRxThread;
 

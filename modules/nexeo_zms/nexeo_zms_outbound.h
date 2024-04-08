@@ -61,7 +61,7 @@ private:
         GstElement* pipeline,
         guint size,
         NexeoZmsOutbound* st);
-    void parseDeviceMessage(
+    void parseDeviceHeadset(
         const char* device);
 
 private:
@@ -73,7 +73,7 @@ private:
     size_t m_sampc;
     uint32_t m_ptime;
     int16_t* m_buf;
-    int m_msg;
+    int m_ppid;
     std::shared_ptr<zms::LinuxAgent> mZmsAgent;
     std::shared_ptr<std::thread> mDataThread;
     std::atomic<bool> m_needs_audio;

@@ -25,24 +25,6 @@
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-static const std::list<std::tuple<int, int>> kMessageSubscriptions =
-{
-    { zms::MSG_SYS_PHASE_COMPLETE, ZMS_WILDCARD },
-    { zms::MSG_NEW_SPEAKER_MIC, ZMS_WILDCARD },
-    { zms::MSG_UPDATED_SPEAKER_MIC, ZMS_WILDCARD },
-    { zms::MSG_UPDATED_TRIGGER_TBL, ZMS_WILDCARD },
-    { zms::MSG_AUD_LANE1_OUTBOUND, ZMS_WILDCARD },
-    { zms::MSG_AUD_LANE2_OUTBOUND, ZMS_WILDCARD },
-    { zms::MSG_AUD_AOT_VOICE_L1, ZMS_WILDCARD },
-    { zms::MSG_AUD_AOT_VOICE_L2, ZMS_WILDCARD },
-    { zms::MSG_OT_TO_CT_START, ZMS_WILDCARD },
-    { zms::MSG_OT_TO_CT_STOP, ZMS_WILDCARD },
-    { zms::MSG_SID_UPDATED, ZMS_WILDCARD },
-    { zms::MSG_AUDIO_VAIO_STOP_SPKR, ZMS_WILDCARD },
-    { zms::MSG_APP_LOGGING_LVL_UPDATED, ZMS_WILDCARD },
-    { zms::MSG_SID_UPDATED, SID_AOT_ENABLED },
-    { zms::MSG_SID_UPDATED, SID_VAIO_ENABLED }
-};
 
 // ---------------------------------------------------------------------------
 // Creates the audio device.
@@ -120,7 +102,7 @@ NexeoZmsInbound::NexeoZmsInbound(
 
     m_rh = rh;
     m_arg = arg;
-    parseDeviceMessage(device);
+    parseDeviceHeadset(device);
 
     m_ptime = prm->ptime;
     if (!m_ptime)
@@ -168,32 +150,14 @@ NexeoZmsInbound::NexeoZmsInbound(
         throw err;
     }
 
-    bool subscribed = false;
-    for (const auto& sub : kMessageSubscriptions)
+    // Subscribe to the audio messages.
+    err = mZmsAgent->subscribe(
+        400 /* MSG_AUD_BOSS_HEADSET_RX */,
+        ZMS_WILDCARD);
+    if (err)
     {
-        auto type = std::get<0>(sub);
-        auto index = std::get<1>(sub);
-
-        err = mZmsAgent->subscribe(type, index);
-        if (err)
-        {
-            warning("zms_inbound: Message subscription (%d/%d) failed: %d\n", type, index, err);
-            throw err;
-        }
-        else if (type == m_msg)
-        {
-            subscribed = true;
-        }
-    }
-
-    if (!subscribed)
-    {
-        err = mZmsAgent->subscribe(m_msg, ZMS_WILDCARD);
-        if (err)
-        {
-            warning("zms_inbound: Message subscription (%d/%d) failed: %d\n", m_msg, ZMS_WILDCARD, err);
-            throw err;
-        }
+        warning("zms_inbound: Message subscription failed: %d\n", err);
+        throw err;
     }
 
     setupPipeline();
@@ -430,95 +394,55 @@ void NexeoZmsInbound::rxMessage()
             break;
         }
 
-        // If we got the target type message, pull the audio out.
-        if (rxMsg.type == m_msg)
+        // Make sure we got the target message.
+        if (rxMsg.type != 400 /* MSG_AUD_BOSS_HEADSET_RX */)
         {
-            GstFlowReturn ret;
-            GstBuffer* buf;
-
-            buf = gst_buffer_new_allocate(
-                NULL,
-                rxMsg.index,
-                NULL);
-            gst_buffer_fill(buf, 0, (char*) rxMsg.data.data(), rxMsg.index);
-
-            GST_BUFFER_TIMESTAMP (buf) = gst_util_uint64_scale_int(
-                m_totalSamples,
-                GST_SECOND,
-                16000);
-            GST_BUFFER_DURATION (buf) = gst_util_uint64_scale(
-                rxMsg.index / 2,
-                GST_SECOND,
-                16000);
-
-            ret = gst_app_src_push_buffer((GstAppSrc*) m_appsrc, buf);
-            if (ret != GST_FLOW_OK)
-            {
-                warning("zms_inbound: push buffer failed: %d\n", ret);
-            }
-            else
-            {
-                m_totalSamples += rxMsg.index / 2;
-            }
-
             continue;
-
-#if 0
-            //warning("zms_inbound: zms::MSG_AUD_LANE1_OUTBOUND\n");
-
-            // copy the message data into an aubuf
-            // this assumes the data is in the right format already
-            // if not, we'd need to resample / conv / etc.
-            //
-            //
-            //
-
-            struct auframe af;
-            af.fmt = AUFMT_RAW;
-            af.srate = 0;
-            af.sampv = (uint8_t *) rxMsg.data.data();
-            af.sampc = rxMsg.index;
-            af.timestamp = 0;
-            af.level = AULEVEL_UNDEF;
-
-            int err = aubuf_write_auframe(m_aubuf, &af);
-            if (err)
-            {
-                warning("zms_inbound: aubuf_write failed: %m\n", err);
-                break;
-            }
-
-            /*
-            const struct timespec delay =
-            {
-                0,
-                (long) m_prm.ptime * (1000000 / 2)
-            };
-            */
-
-            playPacket();
-
-            if (aubuf_cur_size(m_aubuf) < m_psize)
-            {
-                break;
-            }
-
-            //(void) nanosleep(&delay, NULL);
-#endif //0
-
         }
 
-        //warning("zms_inbound: got message %d, %d bytes\n", rxMsg.type, rxMsg.index);
+        // TODO: message structure
 
-        // Handle other message types.
-        // TODO: if this is common type logic it can't be done here; then
-        // subscribe and handle these messages somewhere else.
-        switch (rxMsg.type)
+        // Check source headset id versus our expected id.
+        auto message_ppid = rxMsg.data[0];
+        if (m_ppid != message_ppid)
         {
-            default:
-            {
-                break;
-            }
+            debug(
+                "zms_inbound: ignoring message, "
+                "unexpected headset id (%d != %d)\n",
+                message_ppid,
+                m_ppid);
+            continue;
+        }
+
+        GstFlowReturn ret;
+        GstBuffer* buf;
+
+        int audioLength = rxMsg.index - 4;
+        char* audio = (char*) &rxMsg.data[4];
+
+        buf = gst_buffer_new_allocate(
+            NULL,
+            audioLength,
+            NULL);
+        gst_buffer_fill(buf, 0, audio, audioLength);
+
+        GST_BUFFER_TIMESTAMP (buf) = gst_util_uint64_scale_int(
+            m_totalSamples,
+            GST_SECOND,
+            16000);
+        GST_BUFFER_DURATION (buf) = gst_util_uint64_scale(
+            audioLength / 2,
+            GST_SECOND,
+            16000);
+
+        ret = gst_app_src_push_buffer((GstAppSrc*) m_appsrc, buf);
+        if (ret != GST_FLOW_OK)
+        {
+            warning("zms_inbound: push buffer failed: %d\n", ret);
+        }
+        else
+        {
+            m_totalSamples += audioLength / 2;
         }
     }
 }
@@ -570,29 +494,29 @@ void NexeoZmsInbound::playPacket()
 }
 
 // ---------------------------------------------------------------------------
-// Parses a device definition for the message id value.
+// Parses a device definition for the headset id value.
 // ---------------------------------------------------------------------------
-void NexeoZmsInbound::parseDeviceMessage(const char* device)
+void NexeoZmsInbound::parseDeviceHeadset(const char* device)
 {
     std::cmatch m;
-    std::regex r("msg=(\\d{1,5})");
+    std::regex r("ppid=(\\d{1,2})");
 
     if (!std::regex_search(device, m, r))
     {
         throw EINVAL;
     }
 
-    // TODO: validate that the message id is acceptable (audio messages only!)
-    auto in_msg = std::stoi(m.str(1));
-    if (in_msg <= 0 || in_msg > zms::MSG_NUM_MAX)
+    // TODO: validate that the headset id is acceptable (1-99 only!)
+    auto in_ppid = std::stoi(m.str(1));
+    if (in_ppid <= 0 || in_ppid > 99)
     {
         throw EINVAL;
     }
     else
     {
-        m_msg = in_msg;
+        m_ppid = in_ppid;
     }
 
-    info("zms_inbound: found msg id '%d' from device '%s'\n", m_msg, device);
+    info("zms_inbound: found ppid '%d' from device '%s'\n", m_ppid, device);
 }
 

@@ -99,7 +99,7 @@ NexeoZmsOutbound::NexeoZmsOutbound(
 
     m_wh = wh;
     m_arg = arg;
-    parseDeviceMessage(device);
+    parseDeviceHeadset(device);
 
     m_ptime = prm->ptime;
     if (!m_ptime)
@@ -153,18 +153,14 @@ NexeoZmsOutbound::NexeoZmsOutbound(
 // ---------------------------------------------------------------------------
 NexeoZmsOutbound::~NexeoZmsOutbound()
 {
-    if (m_run)
-    {
-        m_run = false;
-    }
-
+    m_run = false;
     m_needs_audio = false;
+
+    gst_element_set_state(m_pipeline, GST_STATE_NULL);
 
     mDataThread->join();
 
-    gst_element_set_state(m_pipeline, GST_STATE_NULL);
     gst_object_unref(GST_OBJECT(m_pipeline));
-
     mem_deref(m_buf);
 }
 
@@ -195,23 +191,27 @@ void NexeoZmsOutbound::sendMessage(GstBuffer* buffer)
 
     // Form a ZMS message from the buffer and send it
     zms::Message txMsg;
-    txMsg.index = framesToSend * INBOUND_FRAME_SIZE;
-    txMsg.type = m_msg;
+    txMsg.type = 401; // MSG_AUD_BOSS_HEADSET_TX
+    txMsg.index = framesToSend * INBOUND_FRAME_SIZE + 4;
 
     // TODO: use GST queues to buffer data, prevent more copies
     //txMsg.data = std::string(txMsg.index, 0); // alloc a string buffer
-    //gst_buffer_extract(buffer, 0, txMsg.data.data(), txMsg.index);
+    //gst_buffer_extract(buffer, 0, &txMsg.data.data()[4], txMsg.index);
 
-    txMsg.data = std::string(m_buffer.begin(), m_buffer.begin() + txMsg.index);
+    txMsg.data = std::string(txMsg.index, 0);
+    txMsg.data[0] = m_ppid;
+    memcpy(&txMsg.data[4], m_buffer.data(), txMsg.index - 4);
 
     auto retVal = mZmsAgent->send(txMsg);
     if (retVal != zms::SUCCESS)
     {
-        warning("zms_outbound: msg %d size %d send failed: %d", m_msg, txMsg.index, retVal);
+        warning(
+            "zms_outbound: send (%d bytes) failed: %d\n",
+            txMsg.index,
+            retVal);
     }
 
-    m_buffer.erase(m_buffer.begin(), m_buffer.begin() + txMsg.index);
-
+    m_buffer.erase(m_buffer.begin(), m_buffer.begin() + txMsg.index - 4);
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +227,12 @@ void NexeoZmsOutbound::handleSinkData(
     (void) pad;
 
     NexeoZmsOutbound* st = (NexeoZmsOutbound*) user_data;
+    if (!st)
+    {
+        warning("zms_outbound: handleSinkData: invalid pointer!");
+        return;
+    }
+
     st->sendMessage(buffer);
 }
 
@@ -257,6 +263,12 @@ void NexeoZmsOutbound::enoughData(
 {
     (void) pipeline;
     (void) size;
+
+    if (!st)
+    {
+        warning("zms_outbound: enoughData: invalid pointer!");
+        return;
+    }
 
     st->m_needs_audio = false;
 }
@@ -457,29 +469,29 @@ void NexeoZmsOutbound::handleSourceData()
 }
 
 // ---------------------------------------------------------------------------
-// Parses a device definition for the message id value.
+// Parses a device definition for the headset id value.
 // ---------------------------------------------------------------------------
-void NexeoZmsOutbound::parseDeviceMessage(const char* device)
+void NexeoZmsOutbound::parseDeviceHeadset(const char* device)
 {
     std::cmatch m;
-    std::regex r("msg=(\\d{1,5})");
+    std::regex r("ppid=(\\d{1,2})");
 
     if (!std::regex_search(device, m, r))
     {
         throw EINVAL;
     }
 
-    // TODO: validate that the message id is acceptable (audio messages only!)
-    auto in_msg = std::stoi(m.str(1));
-    if (in_msg <= 0 || in_msg > zms::MSG_NUM_MAX)
+    // TODO: validate that the headset id is acceptable (1-99 only!)
+    auto in_ppid = std::stoi(m.str(1));
+    if (in_ppid <= 0 || in_ppid > 99)
     {
         throw EINVAL;
     }
     else
     {
-        m_msg = in_msg;
+        m_ppid = in_ppid;
     }
 
-    info("zms_outbound: found msg id '%d' from device '%s'\n", m_msg, device);
+    info("zms_outbound: found ppid '%d' from device '%s'\n", m_ppid, device);
 }
 
