@@ -188,8 +188,12 @@ static bool established_call_test(const struct call* call, void *arg)
 {
 	struct filter_arg *fa = arg;
 
-	if (call == fa->exclude)
+	// Don't consider calls from other accounts.
+	if (call_account(call) != call_account(fa->exclude) ||
+		call == fa->exclude)
+	{
 		return false;
+	}
 
 	return call_state(call) == CALL_STATE_ESTABLISHED;
 }
