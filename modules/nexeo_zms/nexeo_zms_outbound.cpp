@@ -79,6 +79,8 @@ NexeoZmsOutbound::NexeoZmsOutbound(
     const char* device,
     auplay_write_h* wh,
     void* arg)
+:   m_ppid(0),
+    m_group(255)
 {
     if (!ap || !prm || !wh || !device)
     {
@@ -99,7 +101,16 @@ NexeoZmsOutbound::NexeoZmsOutbound(
 
     m_wh = wh;
     m_arg = arg;
+
     parseDeviceHeadset(device);
+    parseDeviceGroup(device);
+    if (m_ppid == 0 && m_group == 255)
+    {
+        warning(
+            "zms_outbound: could not find ppid or group in device: %s\n",
+            device);
+        throw EINVAL;
+    }
 
     m_ptime = prm->ptime;
     if (!m_ptime)
@@ -199,7 +210,8 @@ void NexeoZmsOutbound::sendMessage(GstBuffer* buffer)
     //gst_buffer_extract(buffer, 0, &txMsg.data.data()[4], txMsg.index);
 
     txMsg.data = std::string(txMsg.index, 0);
-    txMsg.data[0] = m_ppid;
+    txMsg.data[0] = (uint8_t) m_ppid;
+    txMsg.data[1] = (uint8_t) m_group;
     memcpy(&txMsg.data[4], m_buffer.data(), txMsg.index - 4);
 
     auto retVal = mZmsAgent->send(txMsg);
@@ -471,21 +483,21 @@ void NexeoZmsOutbound::handleSourceData()
 // ---------------------------------------------------------------------------
 // Parses a device definition for the headset id value.
 // ---------------------------------------------------------------------------
-void NexeoZmsOutbound::parseDeviceHeadset(const char* device)
+int NexeoZmsOutbound::parseDeviceHeadset(const char* device)
 {
     std::cmatch m;
     std::regex r("ppid=(\\d{1,2})");
 
     if (!std::regex_search(device, m, r))
     {
-        throw EINVAL;
+        return EINVAL;
     }
 
     // TODO: validate that the headset id is acceptable (1-99 only!)
     auto in_ppid = std::stoi(m.str(1));
     if (in_ppid <= 0 || in_ppid > 99)
     {
-        throw EINVAL;
+        return EINVAL;
     }
     else
     {
@@ -493,5 +505,34 @@ void NexeoZmsOutbound::parseDeviceHeadset(const char* device)
     }
 
     info("zms_outbound: found ppid '%d' from device '%s'\n", m_ppid, device);
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// Parses a device definition for the group id value.
+// ---------------------------------------------------------------------------
+int NexeoZmsOutbound::parseDeviceGroup(const char* device)
+{
+    std::cmatch m;
+    std::regex r("group=(\\d{1,2})");
+
+    if (!std::regex_search(device, m, r))
+    {
+        return EINVAL;
+    }
+
+    // TODO: validate that the group id is acceptable (0-9 only!)
+    auto in_groupid = std::stoi(m.str(1));
+    if (in_groupid < 0 || in_groupid > 9)
+    {
+        return EINVAL;
+    }
+    else
+    {
+        m_group = in_groupid;
+    }
+
+    info("zms_outbound: found group '%d' from device '%s'\n", m_group, device);
+    return 0;
 }
 
