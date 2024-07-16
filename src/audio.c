@@ -180,6 +180,7 @@ static void stop_tx(struct autx *tx, struct audio *a)
 	if (!tx || !a)
 		return;
 
+	stream_enable_tx(a->strm, false);
 	if (a->cfg.txmode == AUDIO_MODE_THREAD &&
 	    re_atomic_rlx(&tx->thr.run)) {
 		re_atomic_rlx_set(&tx->thr.run, false);
@@ -194,25 +195,15 @@ static void stop_tx(struct autx *tx, struct audio *a)
 }
 
 
-static void stop_aur(struct audio_recv *aur)
-{
-	if (!aur)
-		return;
-
-	/* audio player must be stopped first */
-	aurecv_stop(aur);
-}
-
-
 static void audio_destructor(void *arg)
 {
 	struct audio *a = arg;
 
 	debug("audio: destroyed (started=%d)\n", a->started);
 
-	stream_enable(a->strm, false);
 	stop_tx(&a->tx, a);
-	stop_aur(a->aur);
+	stream_enable_rx(a->strm, false);
+	aurecv_stop(a->aur);
 
 	mem_deref(a->tx.enc);
 	mem_deref(a->tx.aubuf);
@@ -422,7 +413,6 @@ static void poll_aubuf_tx(struct audio *a)
 {
 	struct autx *tx = &a->tx;
 	struct auframe af;
-	int16_t *sampv = tx->sampv;
 	size_t sampc;
 	size_t sz;
 	struct le *le;
@@ -439,7 +429,7 @@ static void poll_aubuf_tx(struct audio *a)
 	ch = tx->ausrc_prm.ch;
 
 	/* timed read from audio-buffer */
-	auframe_init(&af, tx->src_fmt, sampv, sampc, srate, ch);
+	auframe_init(&af, tx->src_fmt, tx->sampv, sampc, srate, ch);
 	aubuf_read_auframe(tx->aubuf, &af);
 
 	/* Process exactly one audio-frame in list order */
@@ -1134,6 +1124,8 @@ static int start_source(struct autx *tx, struct audio *a, struct list *ausrcl)
 		     aufmt_name(tx->src_fmt));
 	}
 
+	stream_enable_tx(a->strm, true);
+
 	return 0;
 }
 
@@ -1151,25 +1143,47 @@ static void audio_flush_filters(struct audio *a)
 
 
 /**
- * Start the audio playback and recording
+ * Update audio object and start/stop according to media direction
  *
  * @param a Audio object
  *
  * @return 0 if success, otherwise errorcode
  */
-int audio_start(struct audio *a)
+int audio_update(struct audio *a)
 {
 	struct list *aufiltl = baresip_aufiltl();
-	const struct sdp_media *m;
-	enum sdp_dir dir;
+	struct sdp_media *m;
+	enum sdp_dir dir = SDP_INACTIVE;
+	const struct sdp_format *sc = NULL;
 	int err = 0;
 
 	if (!a)
 		return EINVAL;
 
-	debug("audio: start\n");
+	debug("audio: update\n");
 	m = stream_sdpmedia(audio_strm(a));
-	dir = sdp_media_dir(m);
+
+	if (!sdp_media_disabled(m)) {
+		dir = sdp_media_dir(m);
+		sc = sdp_media_rformat(m, NULL);
+	}
+
+	if (!sc || !sc->data) {
+		info("audio: stream is disabled\n");
+		audio_stop(a);
+		return 0;
+	}
+
+	if (dir & SDP_RECVONLY)
+		err |= audio_decoder_set(a, sc->data, sc->pt, sc->rparams);
+
+	if (dir & SDP_SENDONLY)
+		err |= audio_encoder_set(a, sc->data, sc->pt, sc->params);
+
+	if (err) {
+		warning("audio: start error (%m)\n", err);
+		return err;
+	}
 
 	/* Audio filter */
 	if (!list_isempty(aufiltl)) {
@@ -1179,14 +1193,19 @@ int audio_start(struct audio *a)
 			return err;
 	}
 
-	if (dir & SDP_RECVONLY)
-		err |= aurecv_start_player(a->aur, baresip_auplayl());
+	if (dir & SDP_RECVONLY) {
+		stream_enable_rx(a->strm, true);
+	}
+	else {
+		stream_enable_rx(a->strm, false);
+		aurecv_stop(a->aur);
+	}
 
-	if (dir & SDP_SENDONLY)
+	if (dir & SDP_SENDONLY) {
 		err |= start_source(&a->tx, a, baresip_ausrcl());
-	if (err) {
-		warning("audio: start error (%m)\n", err);
-		return err;
+	}
+	else {
+		stop_tx(&a->tx, a);
 	}
 
 	if (a->tx.ac && aurecv_codec(a->aur)) {
@@ -1201,6 +1220,22 @@ int audio_start(struct audio *a)
 	}
 
 	return err;
+}
+
+
+/**
+ * This function simply calls audio_update() and kept for backward
+ * compatibility
+ *
+ * @param a Audio object
+ *
+ * @return 0 if success, otherwise errorcode
+ *
+ * @deprecated Use audio_update() instead
+ */
+int audio_start(struct audio *a)
+{
+	return audio_update(a);
 }
 
 
@@ -1256,8 +1291,8 @@ void audio_stop(struct audio *a)
 		return;
 
 	stop_tx(&a->tx, a);
-	stream_enable(a->strm, false);
-	stop_aur(a->aur);
+	stream_enable_rx(a->strm, false);
+	aurecv_stop(a->aur);
 	a->started = false;
 }
 
@@ -1280,6 +1315,8 @@ bool audio_started(const struct audio *a)
 
 /**
  * Set the audio encoder used
+ *
+ * @note The audio source has to be started separately
  *
  * @param a      Audio object
  * @param ac     Audio codec to use
@@ -1338,16 +1375,14 @@ int audio_encoder_set(struct audio *a, const struct aucodec *ac,
 	if (ac->ptime)
 		tx->ptime = ac->ptime;
 
-	if (!tx->ausrc) {
-		err |= audio_start(a);
-	}
-
 	return err;
 }
 
 
 /**
  * Set the audio decoder used
+ *
+ * @note Starts also the player if not already running
  *
  * @param a      Audio object
  * @param ac     Audio codec to use
@@ -1383,8 +1418,8 @@ int audio_decoder_set(struct audio *a, const struct aucodec *ac,
 		return err;
 
 	stream_set_srate(a->strm, 0, ac->crate);
-	if (reset)
-		err |= audio_start(a);
+	if (reset || !aurecv_player_started(a->aur))
+		err |= aurecv_start_player(a->aur, baresip_auplayl());
 
 	return err;
 }

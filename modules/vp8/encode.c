@@ -15,6 +15,7 @@
 
 enum {
 	HDR_SIZE = 4,
+	KEYFRAME_INTERVAL = 10  /* Keyframes per second */
 };
 
 
@@ -92,11 +93,17 @@ static int open_encoder(struct videnc_state *ves, const struct vidsz *size)
 	vpx_codec_enc_cfg_t cfg;
 	vpx_codec_err_t res;
 	vpx_codec_flags_t flags = 0;
+	uint32_t threads = 1;
+	int32_t cpuused = 16;
 
 	res = vpx_codec_enc_config_default(&vpx_codec_vp8_cx_algo, &cfg, 0);
 	if (res)
 		return EPROTO;
 
+	conf_get_u32(conf_cur(), "vp8_enc_threads", &threads);
+	conf_get_i32(conf_cur(), "vp8_enc_cpuused", &cpuused);
+
+	cfg.g_threads = threads;
 	cfg.g_profile = 2;
 	cfg.g_w = size->w;
 	cfg.g_h = size->h;
@@ -105,11 +112,16 @@ static int open_encoder(struct videnc_state *ves, const struct vidsz *size)
 #ifdef VPX_ERROR_RESILIENT_DEFAULT
 	cfg.g_error_resilient = VPX_ERROR_RESILIENT_DEFAULT;
 #endif
-	cfg.g_pass            = VPX_RC_ONE_PASS;
-	cfg.g_lag_in_frames   = 0;
-	cfg.rc_end_usage      = VPX_VBR;
-	cfg.rc_target_bitrate = ves->bitrate;
-	cfg.kf_mode           = VPX_KF_AUTO;
+	cfg.g_pass		= VPX_RC_ONE_PASS;
+	cfg.g_lag_in_frames	= 0;
+	cfg.rc_end_usage	= VPX_CBR;
+	cfg.rc_target_bitrate	= ves->bitrate / 1000; /* kbps */
+	cfg.rc_overshoot_pct	= 15;
+	cfg.rc_undershoot_pct	= 100;
+	cfg.rc_dropframe_thresh = 0;
+	cfg.kf_mode		= VPX_KF_AUTO;
+	cfg.kf_min_dist		= ves->fps * KEYFRAME_INTERVAL;
+	cfg.kf_max_dist		= ves->fps * KEYFRAME_INTERVAL;
 
 	if (ves->ctxup) {
 		debug("vp8: re-opening encoder\n");
@@ -130,7 +142,7 @@ static int open_encoder(struct videnc_state *ves, const struct vidsz *size)
 
 	ves->ctxup = true;
 
-	res = vpx_codec_control(&ves->ctx, VP8E_SET_CPUUSED, 16);
+	res = vpx_codec_control(&ves->ctx, VP8E_SET_CPUUSED, cpuused);
 	if (res) {
 		warning("vp8: codec ctrl: %s\n", vpx_codec_err_to_string(res));
 	}

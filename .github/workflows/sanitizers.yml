@@ -10,17 +10,18 @@ on:
 
 jobs:
   sanitizers:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     strategy:
       matrix:
         sanitizer: [thread, address, undefined]
 
     env:
-      CC: clang
+      CC: clang-17
+      CXX: clang++-17
       CMAKE_GENERATOR: Ninja
-      CXXFLAGS: "-fsanitize=${{ matrix.sanitizer }} -fno-sanitize-recover"
-      CFLAGS: "-fsanitize=${{ matrix.sanitizer }} -fno-sanitize-recover"
+      CXXFLAGS: "-fsanitize=${{ matrix.sanitizer }} -fno-sanitize-recover=all -fno-sanitize=function"
+      CFLAGS: "-fsanitize=${{ matrix.sanitizer }} -fno-sanitize-recover=all -fno-sanitize=function"
       ASAN_OPTIONS: fast_unwind_on_malloc=0
 
     steps:
@@ -34,8 +35,18 @@ jobs:
     - name: install packages
       run: |
         sudo apt-get update && sudo apt-get install -y libssl-dev ninja-build
-   
-    - uses: sreimers/pr-dependency-action@v0.6
+
+    - name: mmap rnd_bits workaround
+      run: |
+        sudo sysctl -w vm.mmap_rnd_bits=28
+
+    - name: Install clang-tools
+      run: |
+        wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
+        sudo add-apt-repository "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main"
+        sudo apt-get update && sudo apt-get install -y clang-17
+
+    - uses: sreimers/pr-dependency-action@v1
       with:
         name: re
         repo: https://github.com/baresip/re
@@ -51,7 +62,7 @@ jobs:
       run: sudo ldconfig
 
     - name: make baresip selftest
-      run: cmake -B build -DHAVE_THREADS= -DSTATIC=1 -DMODULES="g711;ausine;fakevideo;auconv;dtls_srtp;srtp;aufile" && cmake --build build -j
+      run: cmake -B build -DHAVE_THREADS= -DSTATIC=1 -DMODULES="g711;ausine;fakevideo;auconv;auresamp;dtls_srtp;srtp;aufile" && cmake --build build -j
 
     - name: run selftest
       run: ./build/test/selftest

@@ -13,7 +13,7 @@ extern "C" {
 
 
 /** Defines the Baresip version string */
-#define BARESIP_VERSION "3.9.0"
+#define BARESIP_VERSION "3.13.0"
 
 
 #ifndef NET_MAX_NS
@@ -113,6 +113,7 @@ int account_set_video_codecs(struct account *acc, const char *codecs);
 int account_set_mwi(struct account *acc, bool value);
 int account_set_call_transfer(struct account *acc, bool value);
 int account_set_rtcp_mux(struct account *acc, bool value);
+void account_set_catchall(struct account *acc, bool value);
 int account_auth(const struct account *acc, char **username, char **password,
 		 const char *realm);
 struct list *account_aucodecl(const struct account *acc);
@@ -266,6 +267,7 @@ void call_set_current(struct list *calls, struct call *call);
 const struct list *call_get_custom_hdrs(const struct call *call);
 void call_set_media_direction(struct call *call, enum sdp_dir a,
 			     enum sdp_dir v);
+void call_set_mdir(struct call *call, enum sdp_dir a, enum sdp_dir v);
 void call_set_media_estdir(struct call *call, enum sdp_dir a, enum sdp_dir v);
 void call_start_answtmr(struct call *call, uint32_t ms);
 bool          call_supported(struct call *call, uint16_t tags);
@@ -358,6 +360,7 @@ struct config_sip {
 	enum sip_transp transp; /**< Default outgoing SIP transport protocol */
 	bool verify_server;     /**< Enable SIP TLS verify server   */
 	bool verify_client;     /**< Enable SIP TLS verify client   */
+	enum tls_resume_mode tls_resume; /** TLS resumption mode    */
 	uint8_t tos;            /**< Type-of-Service for SIP        */
 };
 
@@ -566,6 +569,7 @@ struct ausrc_prm {
 	uint8_t    ch;          /**< Number of channels         */
 	uint32_t   ptime;       /**< Wanted packet-time in [ms] */
 	int        fmt;         /**< Sample format (enum aufmt) */
+	size_t     duration;    /**< Duration in [ms], 0 for infinite        */
 };
 
 typedef void (ausrc_read_h)(struct auframe *af, void *arg);
@@ -747,6 +751,8 @@ typedef int  (menc_media_h)(struct menc_media **mp, struct menc_sess *sess,
 			   struct sdp_media *sdpm,
 			   const struct stream *strm);
 
+typedef int (menc_txrekey_h)(struct menc_media *m);
+
 struct menc {
 	struct le le;
 	const char *id;
@@ -754,6 +760,7 @@ struct menc {
 	bool wait_secure;
 	menc_sess_h *sessh;
 	menc_media_h *mediah;
+	menc_txrekey_h *txrekeyh;
 };
 
 void menc_register(struct list *mencl, struct menc *menc);
@@ -793,6 +800,7 @@ const struct sa *net_laddr_for(const struct network *net,
 bool net_is_laddr(const struct network *net, struct sa *sa);
 int net_set_dst_scopeid(const struct network *net, struct sa *dst);
 struct dnsc     *net_dnsc(const struct network *net);
+int net_set_dnsc(struct network *net, struct dnsc *dnsc);
 
 
 /*
@@ -1380,6 +1388,7 @@ struct stream *audio_strm(const struct audio *au);
 uint64_t audio_jb_current_value(const struct audio *au);
 int  audio_set_bitrate(struct audio *au, uint32_t bitrate);
 bool audio_rxaubuf_started(const struct audio *au);
+int  audio_update(struct audio *a);
 int  audio_start(struct audio *a);
 int  audio_start_source(struct audio *a, struct list *ausrcl,
 			struct list *aufiltl);
@@ -1452,6 +1461,8 @@ struct stream_param {
 	const char *peer;   /**< Peer uri/name or identifier  */
 };
 
+struct jbuf_stat;
+
 typedef void (stream_mnatconn_h)(struct stream *strm, void *arg);
 typedef void (stream_rtpestab_h)(struct stream *strm, void *arg);
 typedef void (stream_rtcp_h)(struct stream *strm,
@@ -1460,6 +1471,7 @@ typedef void (stream_error_h)(struct stream *strm, int err, void *arg);
 
 int stream_update(struct stream *s);
 const struct rtcp_stats *stream_rtcp_stats(const struct stream *strm);
+int stream_jbuf_stats(const struct stream *strm, struct jbuf_stat *s);
 struct sdp_media *stream_sdpmedia(const struct stream *s);
 uint32_t stream_metric_get_tx_n_packets(const struct stream *strm);
 uint32_t stream_metric_get_tx_n_bytes(const struct stream *strm);

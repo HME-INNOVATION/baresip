@@ -94,6 +94,7 @@ struct account {
 	char *uas_pass;              /**< UAS authentication password        */
 	bool rtcp_mux;               /**< RTCP multiplexing                  */
 	bool pinhole;                /**< NAT pinhole flag                   */
+	bool catchall;               /**< Catch all inbound requests         */
 };
 
 
@@ -133,6 +134,7 @@ void aurecv_receive(struct audio_recv *ar, const struct rtp_header *hdr,
 		    struct rtpext *extv, size_t extc,
 		    struct mbuf *mb, unsigned lostc, bool *ignore);
 int  aurecv_start_player(struct audio_recv *ar, struct list *auplayl);
+bool aurecv_player_started(const struct audio_recv *ar);
 void aurecv_stop(struct audio_recv *ar);
 void aurecv_stop_auplay(struct audio_recv *ar);
 
@@ -324,6 +326,7 @@ void stream_set_rtcp_interval(struct stream *s, uint32_t n);
 void stream_set_srate(struct stream *s, uint32_t srate_tx, uint32_t srate_rx);
 bool stream_is_ready(const struct stream *strm);
 int  stream_print(struct re_printf *pf, const struct stream *s);
+void stream_remove_menc_media_state(struct stream *strm);
 enum media_type stream_type(const struct stream *strm);
 enum sdp_dir stream_ldir(const struct stream *s);
 struct rtp_sock *stream_rtp_sock(const struct stream *strm);
@@ -402,6 +405,7 @@ struct uag {
 struct config_sip *uag_cfg(void);
 const char *uag_eprm(void);
 bool uag_delayed_close(void);
+sip_msg_h *uag_subh(void);
 int uag_raise(struct ua *ua, struct le *le);
 
 void u32mask_enable(uint32_t *mask, uint8_t bit, bool enable);

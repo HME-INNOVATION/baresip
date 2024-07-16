@@ -141,75 +141,11 @@ static const struct sdp_format *sdp_media_rcodec(const struct sdp_media *m)
 }
 
 
-static int start_audio(struct call *call)
+static void call_timer_start(struct call *call)
 {
-	const struct sdp_format *sc;
-	const struct sdp_media *m = stream_sdpmedia(audio_strm(call->audio));
-	struct aucodec *ac;
-	enum sdp_dir dir = sdp_media_dir(m);
-	int err = 0;
-
-	/* Audio Stream */
-	sc = sdp_media_rcodec(m);
-	if (!sc) {
-		info("call: audio stream is disabled\n");
-		return 0;
-	}
-
-	ac = sc->data;
-	if (dir & SDP_SENDONLY)
-		err |= audio_encoder_set(call->audio, ac,
-					 sc->pt, sc->params);
-
-	if (dir & SDP_RECVONLY)
-		err |= audio_decoder_set(call->audio, ac,
-					 sc->pt, sc->params);
-	if (err) {
-		warning("call: start:"
-			" audio codec setup error (%m)\n", err);
-		return err;
-	}
-
-	err = audio_start(call->audio);
-	if (err)
-		return err;
-
-	return 0;
-}
-
-
-static void call_stream_start(struct call *call, bool active)
-{
-	int err;
-	struct le *le;
-
-	debug("call: stream start (active=%d)\n", active);
-
-	if (stream_is_ready(audio_strm(call->audio))) {
-		err = start_audio(call);
-		if (err) {
-			warning("call: could not start audio: %m\n", err);
-		}
-	}
-
-	if (stream_is_ready(video_strm(call->video))) {
-		err = video_update(call->video, call->peer_uri);
-		if (err) {
-			warning("call: could not start video: %m\n", err);
-		}
-	}
-
-	if (active) {
-
-		tmr_cancel(&call->tmr_inv);
-		call->time_start = time(NULL);
-
-		stream_flush(audio_strm(call->audio));
-	}
-
-	FOREACH_STREAM {
-		stream_enable(le->data, true);
-	}
+	debug("call: timer started\n");
+	tmr_cancel(&call->tmr_inv);
+	call->time_start = time(NULL);
 }
 
 
@@ -309,34 +245,6 @@ static void mnat_handler(int err, uint16_t scode, const char *reason,
 }
 
 
-static int update_audio(struct call *call)
-{
-	const struct sdp_format *sc;
-	int err = 0;
-
-	debug("audio: update\n");
-
-	sc = sdp_media_rcodec(stream_sdpmedia(audio_strm(call->audio)));
-	if (sc) {
-		struct aucodec *ac = sc->data;
-
-		err  = audio_decoder_set(call->audio, ac,
-					 sc->pt, sc->params);
-		if (err) {
-			warning("call: update:"
-				" audio_decoder_set error: %m\n", err);
-		}
-		err |= audio_encoder_set(call->audio, ac,
-					 sc->pt, sc->params);
-	}
-	else {
-		info("audio stream is disabled..\n");
-	}
-
-	return err;
-}
-
-
 static int call_apply_sdp(struct call *call)
 {
 	struct le *le;
@@ -377,7 +285,7 @@ static int update_streams(struct call *call)
 		return EINVAL;
 
 	if (stream_is_ready(audio_strm(call->audio)))
-		err |= update_audio(call);
+		err |= audio_update(call->audio);
 	else
 		audio_stop(call->audio);
 
@@ -528,7 +436,7 @@ static void menc_event_handler(enum menc_event event,
 		if (strstr(prm, "audio")) {
 			stream_set_secure(audio_strm(call->audio), true);
 			stream_start_rtcp(audio_strm(call->audio));
-			err = start_audio(call);
+			err = audio_update(call->audio);
 			if (err) {
 				warning("call: secure: could not"
 					" start audio: %m\n", err);
@@ -593,7 +501,7 @@ static void stream_mnatconn_handler(struct stream *strm, void *arg)
 		switch (stream_type(strm)) {
 
 		case MEDIA_AUDIO:
-			err = start_audio(call);
+			err = audio_update(call->audio);
 			if (err) {
 				warning("call: mnatconn: could not"
 					" start audio: %m\n", err);
@@ -1157,7 +1065,7 @@ int call_connect(struct call *call, const struct pl *paddr)
 		if (err)
 			return err;
 
-		call_set_media_direction(call, call->estadir, call->estvdir);
+		call_set_mdir(call, call->estadir, call->estvdir);
 	}
 
 	return err;
@@ -1302,7 +1210,7 @@ int call_progress_dir(struct call *call, enum sdp_dir adir, enum sdp_dir vdir)
 	tmr_cancel(&call->tmr_inv);
 
 	if (adir != call->estadir || vdir != call->estvdir)
-		call_set_media_direction(call, adir, vdir);
+		call_set_mdir(call, adir, vdir);
 
 	err = call_sdp_get(call, &desc, false);
 	if (err)
@@ -1324,8 +1232,6 @@ int call_progress_dir(struct call *call, enum sdp_dir adir, enum sdp_dir vdir)
 
 	if (err)
 		goto out;
-
-	call_stream_start(call, false);
 
 out:
 	mem_deref(desc);
@@ -1925,7 +1831,7 @@ static void set_established_mdir(void *arg)
 	MAGIC_CHECK(call);
 
 	if (call_need_modify(call)) {
-		call_set_media_direction(call, call->estadir, call->estvdir);
+		call_set_mdir(call, call->estadir, call->estvdir);
 		call_modify(call);
 	}
 }
@@ -1941,6 +1847,7 @@ static uint32_t randwait(uint32_t minwait, uint32_t maxwait)
 static void sipsess_estab_handler(const struct sip_msg *msg, void *arg)
 {
 	struct call *call = arg;
+	uint32_t wait;
 	(void)msg;
 
 	MAGIC_CHECK(call);
@@ -1953,7 +1860,7 @@ static void sipsess_estab_handler(const struct sip_msg *msg, void *arg)
 	if (call->got_offer)
 		(void)update_streams(call);
 
-	call_stream_start(call, true);
+	call_timer_start(call);
 
 	if (call->rtp_timeout_ms) {
 
@@ -1970,9 +1877,11 @@ static void sipsess_estab_handler(const struct sip_msg *msg, void *arg)
 		(void)call_notify_sipfrag(call, 200, "OK");
 	}
 
+	wait = call_is_outgoing(call) ? 150 : 0;
+	wait += randwait(50, 150);
+
 	/* modify call after call_event_established handlers are executed */
-	tmr_start(&call->tmr_reinv, randwait(50, 150),
-		  set_established_mdir, call);
+	tmr_start(&call->tmr_reinv, wait, set_established_mdir, call);
 
 	/* must be done last, the handler might deref this call */
 	call_event_handler(call, CALL_EVENT_ESTABLISHED, "%s", call->peer_uri);
@@ -2036,6 +1945,9 @@ static void sipsess_info_handler(struct sip *sip, const struct sip_msg *msg,
 				call->dtmfh(call, s, call->arg);
 			}
 		}
+	}
+	else if (!mbuf_get_left(msg->mb)) {
+		(void)sip_reply(sip, msg, 200, "OK");
 	}
 	else {
 		(void)sip_reply(sip, msg, 488, "Not Acceptable Here");
@@ -2342,7 +2254,7 @@ int call_accept(struct call *call, struct sipsess_sock *sess_sock,
 		call_event_handler(call, CALL_EVENT_INCOMING, "%s",
                                    call->peer_uri);
 
-	return err;
+	return 0;
 }
 
 
@@ -2409,7 +2321,6 @@ static void sipsess_progr_handler(const struct sip_msg *msg, void *arg)
 		mem_ref(call);
 		call_event_handler(call, CALL_EVENT_PROGRESS, "%s",
                                    call->peer_uri);
-		call_stream_start(call, false);
 		mem_deref(call);
 	}
 	else {
@@ -2449,7 +2360,7 @@ static int sipsess_desc_handler(struct mbuf **descp, const struct sa *src,
 		if (err)
 			return err;
 
-		call_set_media_direction(call, call->estadir, call->estvdir);
+		call_set_mdir(call, call->estadir, call->estvdir);
 	}
 
 	err = call_sdp_get(call, descp, true);
@@ -2536,6 +2447,7 @@ static int send_dtmf_info(struct call *call, char key)
 
 	if ((key < '0' || key > '9') &&
 	    (key < 'a' || key > 'd') &&
+	    (key < 'A' || key > 'D') &&
 	    (key != '*') &&
 	    (key != '#'))
 		return EINVAL;
@@ -3085,7 +2997,7 @@ void call_set_current(struct list *calls, struct call *call)
 
 
 /**
- * Set stream sdp media line direction attribute
+ * Set stream sdp media line direction attribute and established media dir
  *
  * @param call Call object
  * @param a    Audio SDP direction
@@ -3093,6 +3005,23 @@ void call_set_current(struct list *calls, struct call *call)
  */
 void call_set_media_direction(struct call *call, enum sdp_dir a,
 			      enum sdp_dir v)
+{
+	if (!call)
+		return;
+
+	call_set_media_estdir(call, a, v);
+	call_set_mdir(call, a, v);
+}
+
+
+/**
+ * Set stream sdp media line direction attribute
+ *
+ * @param call Call object
+ * @param a    Audio SDP direction
+ * @param v    Video SDP direction if video available
+ */
+void call_set_mdir(struct call *call, enum sdp_dir a, enum sdp_dir v)
 {
 	if (!call)
 		return;

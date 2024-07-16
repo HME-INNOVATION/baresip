@@ -83,8 +83,11 @@ struct mixstatus {
 	enum mixmode nextmode;          /**< Next mix mode                   */
 	float minvol;                   /**< Minimum audio stream volume     */
 	float ausvol;                   /**< Volume for mixed audio source   */
-	size_t sampc;                   /**< Stream sample count for frame   */
-	size_t nbytes;                  /**< Stream bytes per frame          */
+	uint32_t ptime;                 /**< Stream packet time              */
+	size_t sampc_strm;              /**< Stream sample count frame       */
+	size_t nbytes_strm;             /**< Stream bytes per frame          */
+	size_t sampc_max;               /**< Max sample count per frame      */
+	size_t nbytes_max;              /**< Max bytes per frame             */
 	uint16_t i_fade;                /**< Fade-in/-out counter            */
 	uint16_t n_fade;                /**< Fade-in/-out steps              */
 	float delta_fade;               /**< linear delta accumulation       */
@@ -128,10 +131,9 @@ static int init_aubuf(struct mixstatus *st)
 	uint32_t v = 2;
 	size_t maxsz;
 	size_t wishsz;
-	size_t num_bytes = st->sampc * aufmt_sample_size(st->prm.fmt);
 
 	conf_get_u32(conf_cur(), "mixausrc_wish_size", &v);
-	wishsz = v * num_bytes;
+	wishsz = v * st->nbytes_strm;
 	maxsz = 2 * wishsz;
 
 	st->aubuf = mem_deref(st->aubuf);
@@ -144,10 +146,11 @@ static int init_aubuf(struct mixstatus *st)
 		goto out;
 	}
 
+	aubuf_set_live(st->aubuf, false);
 	if (st->rbuf)
 		return 0;
 
-	st->rbuf = mem_zalloc(sizeof(int16_t)*st->sampc, NULL);
+	st->rbuf = mem_zalloc(st->nbytes_strm, NULL);
 	if (!st->rbuf) {
 		warning("mixausrc: Could not allocate rbuf.\n");
 		goto out;
@@ -158,13 +161,14 @@ out:
 }
 
 
-static int process_resamp(struct mixstatus *st, const struct auframe *af)
+static int process_resamp(struct mixstatus *st, const struct auframe *afsrc)
 {
 	int err = 0;
-	size_t nbytes = auframe_size(af);
-	size_t sampc = st->sampc;
-	if (af->fmt != AUFMT_S16LE)
+	if (afsrc->fmt != AUFMT_S16LE) {
+		warning("mixausrc: sample format %s not supported\n",
+			aufmt_name(afsrc->fmt));
 		return EINVAL;
+	}
 
 	if (!st->resamp.resample) {
 		debug("mixausrc: resample ausrc %u/%u -> %u/%u\n",
@@ -180,10 +184,7 @@ static int process_resamp(struct mixstatus *st, const struct auframe *af)
 		}
 
 		st->sampvrs = mem_deref(st->sampvrs);
-		if (st->nbytes > nbytes)
-			nbytes = st->nbytes;
-
-		st->sampvrs = mem_zalloc(nbytes, NULL);
+		st->sampvrs = mem_zalloc(st->nbytes_max, NULL);
 		if (!st->sampvrs) {
 			warning("mixausrc: could not alloc resample buffer\n");
 			return ENOMEM;
@@ -191,44 +192,79 @@ static int process_resamp(struct mixstatus *st, const struct auframe *af)
 	}
 
 	if (st->resamp.resample) {
-		if (af->sampc > sampc)
-			sampc = af->sampc;
-
+		size_t sampc = st->sampc_max;
 		err = auresamp(&st->resamp, st->sampvrs, &sampc,
-			       af->sampv, af->sampc);
-		if (sampc != st->sampc) {
+			       afsrc->sampv, afsrc->sampc);
+
+		if (sampc != st->sampc_strm) {
 			warning("mixausrc: unexpected sample count "
-					"%u vs. %u\n", sampc, st->sampc);
-			st->sampc = sampc;
+					"%u vs. %u\n", sampc, st->sampc_strm);
+			st->sampc_strm = sampc;
+			st->nbytes_strm = aufmt_sample_size(afsrc->fmt)*sampc;
 		}
 	}
 
 	if (err)
 		warning("mixausrc: could not resample frame (%m)\n", err);
 
-
 	return err;
 }
 
 
-static void ausrc_read_handler(struct auframe *af, void *arg)
+static void ausrc_prm_af(struct ausrc_prm *ausprm, struct auframe *afsrc)
+{
+	ausprm->srate = afsrc->srate;
+	ausprm->ch    = afsrc->ch;
+	ausprm->fmt   = afsrc->fmt;
+}
+
+
+static void ausrc_prm_aufilt(struct ausrc_prm *ausprm,
+			     struct aufilt_prm *filprm)
+{
+	ausprm->srate = filprm->srate;
+	ausprm->ch    = filprm->ch;
+	ausprm->fmt   = filprm->fmt;
+}
+
+
+static void ausrc_read_handler(struct auframe *afsrc, void *arg)
 {
 	struct mixstatus *st = arg;
-	size_t num_bytes;
 	int err = 0;
+
+	if (!st->prm.srate || !st->prm.ch)
+		return;
+
+	ausrc_prm_af(&st->ausrc_prm, afsrc);
+	if (!st->ausrc_prm.srate || !st->ausrc_prm.ch)
+		return;
+
+	if (!st->sampc_max || !st->nbytes_max)
+		return;
 
 	if (st->ausrc_prm.srate != st->prm.srate ||
 			st->ausrc_prm.ch != st->prm.ch)
-		err = process_resamp(st, af);
+		err = process_resamp(st, afsrc);
 
-	if (err)
+	if (err) {
 		st->nextmode = FM_FADEIN;
+		return;
+	}
 
-	num_bytes = st->sampc * aufmt_sample_size(st->prm.fmt);
-	if (st->sampvrs)
-		aubuf_write(st->aubuf, st->sampvrs, num_bytes);
+	if (!st->aubuf) {
+		err = init_aubuf(st);
+		if (err) {
+			st->nextmode = FM_FADEIN;
+			return;
+		}
+	}
+
+	if (st->sampvrs) {
+		aubuf_write(st->aubuf, st->sampvrs, st->nbytes_strm);
+	}
 	else
-		aubuf_write(st->aubuf, af->sampv, num_bytes);
+		aubuf_write(st->aubuf, afsrc->sampv, st->nbytes_strm);
 }
 
 
@@ -247,11 +283,8 @@ static int start_ausrc(struct mixstatus *st)
 {
 	int err;
 
-	err = init_aubuf(st);
-	if (err)
-		goto out;
-
 	auresamp_init(&st->resamp);
+	st->ausrc_prm.ptime = st->ptime;
 	err = ausrc_alloc(&st->ausrc, baresip_ausrcl(), st->module,
 			  &st->ausrc_prm, st->param, ausrc_read_handler,
 			  ausrc_error_handler, st);
@@ -263,10 +296,15 @@ static int start_ausrc(struct mixstatus *st)
 		st->mode = FM_FADEIN;
 	}
 
-out:
 	/* now we are ready for next start_process */
 	st->module = mem_deref(st->module);
 	st->param = mem_deref(st->param);
+	st->sampc_max = st->ausrc_prm.srate * st->ausrc_prm.ptime *
+			st->ausrc_prm.ch / 1000;
+	if (st->sampc_strm > st->sampc_max)
+		st->sampc_max = st->sampc_strm;
+
+	st->nbytes_max = st->sampc_max * aufmt_sample_size(st->ausrc_prm.fmt);
 
 	return err;
 }
@@ -276,7 +314,10 @@ static int stop_ausrc(struct mixstatus *st)
 {
 	st->ausrc   = mem_deref(st->ausrc);
 	st->aubuf   = mem_deref(st->aubuf);
+	st->rbuf    = mem_deref(st->rbuf);
 	st->sampvrs = mem_deref(st->sampvrs);
+	st->sampc_max  = 0;
+	st->nbytes_max = 0;
 	st->aubuf_started = false;
 	return 0;
 }
@@ -284,12 +325,9 @@ static int stop_ausrc(struct mixstatus *st)
 
 static void destruct(struct mixstatus *st)
 {
+	stop_ausrc(st);
 	mem_deref(st->module);
 	mem_deref(st->param);
-	mem_deref(st->ausrc);
-	mem_deref(st->aubuf);
-	mem_deref(st->rbuf);
-	mem_deref(st->sampvrs);
 }
 
 
@@ -320,6 +358,8 @@ static void mixstatus_init(struct mixstatus *st, struct aufilt_prm *prm)
 	st->minvol = 1.;
 	st->ausvol = 1.;
 	st->i_fade = 0;
+
+	/* initialize with configured values */
 	st->prm = *prm;
 	st->ausrc_prm.ch = prm->ch;
 	st->ausrc_prm.fmt = prm->fmt;
@@ -334,6 +374,7 @@ static int encode_update(struct aufilt_enc_st **stp, void **ctx,
 	struct mixausrc_enc *st;
 	(void)au;
 	(void)af;
+	(void)prm;
 
 	if (!stp || !ctx || !prm)
 		return EINVAL;
@@ -409,9 +450,8 @@ static void fade_int16(struct mixstatus *st, int16_t *data, uint16_t n,
 	enum mixmode dir)
 {
 	uint16_t i;
-	for (i = 0; (i < n) && (st->i_fade < st->n_fade); ++i) {
+	for (i = 0; (i < n) && (st->i_fade < st->n_fade); ++i)
 		data[i] *= fade_linear(st, dir);
-	}
 }
 
 
@@ -498,26 +538,34 @@ static int mixframe(struct mixstatus *st, struct auframe *af)
 }
 
 
+static void aufilt_prm_update(struct aufilt_prm *prm, struct auframe *af)
+{
+	prm->srate = af->srate;
+	prm->ch    = af->ch;
+	prm->fmt   = af->fmt;
+}
+
+
 static int process(struct mixstatus *st, struct auframe *af)
 {
 	size_t n = af->sampc;
+	uint32_t ptime = (uint32_t) n * 1000 / (af->srate * af->ch);
 	int err = 0;
 
-	st->nbytes = auframe_size(af);
-	if (!st->sampc) {
-		st->sampc = n;
-		st->ausrc_prm.ptime = (uint32_t) n * 1000 /
-			st->ausrc_prm.srate / st->ausrc_prm.ch;
+	st->sampc_strm = af->sampc;
+	st->nbytes_strm = auframe_size(af);
+	if (!st->ptime) {
+		st->ptime = ptime;
 	}
-	else if (st->sampc != n) {
-		warning("mixausrc: sampc changed %lu --> %lu.\n",
-				st->sampc, n);
+	else if (st->ptime != ptime) {
+		warning("mixausrc: ptime changed %u --> %u.\n",
+			st->ptime, ptime);
 		stop_ausrc(st);
 		st->nextmode = FM_FADEIN;
-		st->sampc = 0;
 		return EINVAL;
 	}
 
+	aufilt_prm_update(&st->prm, af);
 	if (st->mode == FM_FADEOUT && st->i_fade == st->n_fade)
 		st->mode = FM_MIX;
 
@@ -532,7 +580,7 @@ static int process(struct mixstatus *st, struct auframe *af)
 		/* a command was invoked */
 		/* process nextmode */
 		if (st->mode != st->nextmode) {
-			debug("mixausrc: mode %s --> %s",
+			debug("mixausrc: mode %s --> %s\n",
 					str_mixmode(st->mode),
 					str_mixmode(st->nextmode));
 			if (st->mode == FM_MIX)
@@ -561,15 +609,16 @@ static int process(struct mixstatus *st, struct auframe *af)
 	}
 	break;
 	case FM_MIX: {
-		if (aubuf_cur_size(st->aubuf) >= st->nbytes) {
-			st->aubuf_started = true;
-			aubuf_read(st->aubuf,(void *) st->rbuf, st->nbytes);
-			/* now mix */
-			err = mixframe(st, af);
-		}
-		else if (!st->ausrc) {
+		if (!st->ausrc) {
 			start_ausrc(st);
 			clear_frame(st, af);
+		}
+		else if (aubuf_cur_size(st->aubuf) >= st->nbytes_strm) {
+			st->aubuf_started = true;
+			aubuf_read(st->aubuf,
+				   (void *) st->rbuf, st->nbytes_strm);
+			/* now mix */
+			err = mixframe(st, af);
 		}
 		else {
 			clear_frame(st, af);
@@ -672,9 +721,11 @@ static int start_process(struct mixstatus* st, const char *name,
 	st->n_fade = (DEFAULT_FADE_TIME * st->ausrc_prm.srate) / 1000;
 	st->delta_fade = (1.0 - st->minvol) / st->n_fade;
 
+	stop_ausrc(st);
+	ausrc_prm_aufilt(&st->ausrc_prm, &st->prm);
 	st->nextmode = FM_FADEOUT;
 
-	return err;
+	return 0;
 }
 
 
@@ -783,7 +834,7 @@ static int enc_mix_stop(struct re_printf *pf, void *unused)
 	(void)pf;
 	(void)unused;
 
-	if (!list_count(&decs))
+	if (!list_count(&encs))
 		return EINVAL;
 
 	enc = encs.head->data;

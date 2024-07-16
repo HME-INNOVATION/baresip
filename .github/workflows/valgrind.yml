@@ -24,7 +24,7 @@ jobs:
       run: |
         sudo apt-get update && sudo apt-get install -y libssl-dev valgrind
    
-    - uses: sreimers/pr-dependency-action@v0.6
+    - uses: sreimers/pr-dependency-action@v1
       with:
         name: re
         repo: https://github.com/baresip/re
@@ -40,7 +40,7 @@ jobs:
       run: sudo ldconfig
 
     - name: make baresip selftest
-      run: cmake -B build -DSTATIC=1 -DMODULES="g711;ausine;fakevideo;auconv;dtls_srtp;srtp;aufile" && cmake --build build -j
+      run: cmake -B build -DSTATIC=1 -DMODULES="g711;ausine;fakevideo;auconv;auresamp;dtls_srtp;srtp;aufile" && cmake --build build -j
 
     - name: valgrind test
       run: valgrind --leak-check=full --show-reachable=yes --error-exitcode=42 ./build/test/selftest

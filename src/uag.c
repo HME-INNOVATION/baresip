@@ -11,26 +11,7 @@
 
 /* One instance */
 
-static struct uag uag = {
-	NULL,
-	LIST_INIT,
-	NULL,
-	NULL,
-	NULL,
-	NULL,
-	false,
-	0,
-	NULL,
-	NULL,
-	false,
-	false,
-	NULL,
-	NULL,
-#ifdef USE_TLS
-	NULL,
-	NULL
-#endif
-};
+static struct uag uag = {.ual = LIST_INIT};
 
 
 /* This function is called when all SIP transactions are done */
@@ -376,6 +357,8 @@ static int uag_transp_add(const struct sa *laddr)
 
 			if (uag.cfg->verify_client)
 				tls_enable_verify_client(uag.tls, true);
+
+			tls_set_resumption(uag.tls, uag.cfg->tls_resume);
 		}
 
 		if (sa_isset(&local, SA_PORT))
@@ -493,6 +476,12 @@ static bool sub_handler(const struct sip_msg *msg, void *arg)
 
 	if (uag.subh)
 		uag.subh(msg, ua);
+	else
+		(void)sip_treplyf(NULL, NULL, uag_sip(), msg, false, 405,
+				 "Method Not Allowed",
+				 "Allow: %H\r\n"
+				 "Content-Length: 0\r\n\r\n",
+				 ua_print_allowed, ua);
 
 	return true;
 }
@@ -818,17 +807,11 @@ static bool uri_match_transport(const struct uri *accu,
 
 static bool uri_match_af(const struct uri *accu, const struct uri *peeru)
 {
-#ifdef HAVE_INET6
 	struct sa sa1;
 	struct sa sa2;
 	int err;
-#else
-	(void)accu;
-	(void)peeru;
-#endif
 
 	/* we list cases where we know there is a mismatch in af */
-#ifdef HAVE_INET6
 	if (peeru->af == AF_UNSPEC || accu->af == AF_UNSPEC)
 		return true;
 
@@ -848,7 +831,6 @@ static bool uri_match_af(const struct uri *accu, const struct uri *peeru)
 
 		return sa_is_linklocal(&sa1) == sa_is_linklocal(&sa2);
 	}
-#endif
 
 	/* both IPv4 or we can't decide if af will match */
 	return true;
@@ -1291,3 +1273,13 @@ bool uag_delayed_close(void)
 	return uag.delayed_close;
 }
 
+
+/**
+ * Get the subscribe handler
+ *
+ * @return Subscribe handler
+ */
+sip_msg_h *uag_subh(void)
+{
+	return uag.subh;
+}

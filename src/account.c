@@ -321,7 +321,7 @@ static void inreq_mode_decode(struct account *prm, const struct pl *pl)
 {
 	struct pl mode;
 
-	prm->inreq_mode = INREQ_MODE_OFF;
+	prm->inreq_mode = INREQ_MODE_ON;
 
 	if (0 == msg_param_decode(pl, "inreq_allowed", &mode)) {
 
@@ -620,6 +620,7 @@ int account_alloc(struct account **accp, const char *sipaddr)
 	err |= audio_codecs_decode(acc, &acc->laddr.params);
 	err |= video_codecs_decode(acc, &acc->laddr.params);
 	err |= media_decode(acc, &acc->laddr.params);
+	err |= param_bool(&acc->catchall, &acc->laddr.params, "catchall");
 	if (err)
 		goto out;
 
@@ -1107,6 +1108,22 @@ int account_set_rtcp_mux(struct account *acc, bool value)
 	acc->rtcp_mux = value;
 
 	return 0;
+}
+
+
+/**
+ * Sets catchall flag for the User-Agent account. A catch all account catches
+ * all inbound SIP requests
+ *
+ * @param acc      User-Agent account
+ * @param value    true or false
+ */
+void account_set_catchall(struct account *acc, bool value)
+{
+	if (!acc)
+		return;
+
+	acc->catchall = value;
 }
 
 
@@ -1988,7 +2005,7 @@ int account_debug(struct re_printf *pf, const struct account *acc)
 			  acc->pinhole ? "yes" : "no");
 	for (i=0; i<RE_ARRAY_SIZE(acc->outboundv); i++) {
 		if (acc->outboundv[i]) {
-			err |= re_hprintf(pf, " outbound%d:    %s\n",
+			err |= re_hprintf(pf, " outbound%zu:    %s\n",
 					  i+1, acc->outboundv[i]);
 		}
 	}
@@ -2018,6 +2035,7 @@ int account_debug(struct re_printf *pf, const struct account *acc)
 	}
 	err |= re_hprintf(pf, " call_transfer:%s\n",
 			  account_call_transfer(acc) ? "yes" : "no");
+	err |= re_hprintf(pf, " catchall:%s\n", acc->catchall ? "yes" : "no");
 	err |= re_hprintf(pf, " cert:         %s\n", acc->cert);
 	err |= re_hprintf(pf, " extra:        %s\n",
 			  acc->extra ? acc->extra : "none");
@@ -2129,7 +2147,7 @@ bool account_uas_isset(const struct account *acc)
  */
 enum inreq_mode account_inreq_mode(const struct account *acc)
 {
-	return acc ? acc->inreq_mode : INREQ_MODE_OFF;
+	return acc ? acc->inreq_mode : INREQ_MODE_ON;
 }
 
 

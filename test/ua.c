@@ -166,6 +166,10 @@ int test_ua_register(void)
 {
 	int err = 0;
 
+#ifdef USE_TLS
+	conf_config()->sip.verify_server = false;
+#endif
+
 	err = ua_init("test", true, true, true);
 	TEST_ERR(err);
 
@@ -273,6 +277,8 @@ static int reg_dns(enum sip_transp tp)
 	int err;
 
 	memset(&t, 0, sizeof(t));
+
+	dnsc_cache_max(net_dnsc(net), 0);
 
 	/*
 	 * Setup server-side mocks:

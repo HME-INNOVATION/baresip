@@ -339,7 +339,7 @@ void aurecv_receive(struct audio_recv *ar, const struct rtp_header *hdr,
 
 	if (discard) {
 		++ar->stats.n_discard;
-		return;
+		goto out;
 	}
 
 	/* TODO:  what if lostc > 1 ?*/
@@ -351,6 +351,7 @@ void aurecv_receive(struct audio_recv *ar, const struct rtp_header *hdr,
 
 	(void)aurecv_stream_decode(ar, hdr, mb, 0, drop);
 
+out:
 	mtx_unlock(ar->mtx);
 }
 
@@ -710,6 +711,12 @@ bool aurecv_started(const struct audio_recv *ar)
 	ret = aubuf_started(ar->aubuf);
 	mtx_unlock(ar->aubuf_mtx);
 	return ret;
+}
+
+
+bool aurecv_player_started(const struct audio_recv *ar)
+{
+	return ar ? ar->auplay != NULL : false;
 }
 
 

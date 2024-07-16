@@ -3,6 +3,7 @@
  *
  * Copyright (C) 2010 Alfred E. Heggestad
  */
+#include <string.h>
 #include <re.h>
 #include <re_atomic.h>
 #include <baresip.h>
@@ -39,8 +40,9 @@ struct menc_st {
 	/* base64_decoding worst case encoded 32+12 key */
 	uint8_t key_rx[46];
 	struct srtp *srtp_tx, *srtp_rx;
+	mtx_t *mtx_tx, *mtx_rx;
 	RE_ATOMIC bool use_srtp;
-	bool got_sdp;
+	RE_ATOMIC bool got_sdp;
 	char *crypto_suite;
 
 	void *rtpsock;
@@ -73,8 +75,16 @@ static void destructor(void *arg)
 	mem_deref(st->rtpsock);
 	mem_deref(st->rtcpsock);
 
-	mem_deref(st->srtp_tx);
-	mem_deref(st->srtp_rx);
+	mtx_lock(st->mtx_tx);
+	st->srtp_tx = mem_deref(st->srtp_tx);
+	mtx_unlock(st->mtx_tx);
+
+	mtx_lock(st->mtx_rx);
+	st->srtp_rx = mem_deref(st->srtp_rx);
+	mtx_unlock(st->mtx_rx);
+
+	mem_deref(st->mtx_tx);
+	mem_deref(st->mtx_rx);
 }
 
 
@@ -166,21 +176,27 @@ static int start_srtp(struct menc_st *st, const char *suite_name)
 	len = get_master_keylen(suite);
 
 	/* allocate and initialize the SRTP session */
+	mtx_lock(st->mtx_tx);
 	if (!st->srtp_tx) {
 		err = srtp_alloc(&st->srtp_tx, suite, st->key_tx, len, 0);
 		if (err) {
 			warning("srtp: srtp_alloc TX failed (%m)\n", err);
+			mtx_unlock(st->mtx_tx);
 			return err;
 		}
 	}
+	mtx_unlock(st->mtx_tx);
 
+	mtx_lock(st->mtx_rx);
 	if (!st->srtp_rx) {
 		err = srtp_alloc(&st->srtp_rx, suite, st->key_rx, len, 0);
 		if (err) {
 			warning("srtp: srtp_alloc RX failed (%m)\n", err);
+			mtx_unlock(st->mtx_rx);
 			return err;
 		}
 	}
+	mtx_unlock(st->mtx_rx);
 
 	/* use SRTP for this stream/session */
 	re_atomic_rlx_set(&st->use_srtp, true);
@@ -199,6 +215,16 @@ static bool send_handler(int *err, struct sa *dst, struct mbuf *mb, void *arg)
 	if (!re_atomic_rlx(&st->use_srtp) || !is_rtp_or_rtcp(mb))
 		return false;
 
+	lerr = mtx_trylock(st->mtx_tx) != thrd_success;
+	if (lerr)
+		goto out;
+
+	if (!st->srtp_tx) {
+		lerr = EBUSY;
+		warning("srtp: srtp_tx not ready (%m)\n", err);
+		goto unlock_out;
+	}
+
 	if (is_rtcp_packet(mb)) {
 		lerr = srtcp_encrypt(st->srtp_tx, mb);
 	}
@@ -206,6 +232,9 @@ static bool send_handler(int *err, struct sa *dst, struct mbuf *mb, void *arg)
 		lerr = srtp_encrypt(st->srtp_tx, mb);
 	}
 
+unlock_out:
+	mtx_unlock(st->mtx_tx);
+out:
 	if (lerr) {
 		warning("srtp: failed to encrypt %s-packet"
 			      " with %zu bytes (%m)\n",
@@ -226,11 +255,22 @@ static bool recv_handler(struct sa *src, struct mbuf *mb, void *arg)
 	int err = 0;
 	(void)src;
 
-	if (!st->got_sdp)
+	if (!re_atomic_rlx(&st->got_sdp))
 		return true;  /* drop the packet */
 
 	if (!re_atomic_rlx(&st->use_srtp) || !is_rtp_or_rtcp(mb))
 		return false;
+
+	err = mtx_trylock(st->mtx_rx) != thrd_success;
+	if (err)
+		goto out;
+
+	if (!st->srtp_rx) {
+		err = EBUSY;
+		warning("srtp: srtp_rx not ready (%m)\n", err);
+		mtx_unlock(st->mtx_rx);
+		goto out;
+	}
 
 	if (is_rtcp_packet(mb)) {
 		err = srtcp_decrypt(st->srtp_rx, mb);
@@ -247,6 +287,8 @@ static bool recv_handler(struct sa *src, struct mbuf *mb, void *arg)
 		}
 	}
 
+	mtx_unlock(st->mtx_rx);
+out:
 	return err ? true : false;
 }
 
@@ -272,23 +314,52 @@ static int sdp_enc(struct menc_st *st, struct sdp_media *m,
 
 static int start_crypto(struct menc_st *st, const struct pl *key_info)
 {
-	size_t olen, len;
+	size_t olen = 0, len = 0;
 	char buf[64] = "";
-	int err;
+	uint8_t *new_key = NULL;
+	int err = 0;
 
 	len = get_master_keylen(resolve_suite(st->crypto_suite));
 
-	/* key-info is BASE64 encoded */
+	/* key-info is BASE64 encoded requiring a larger buffer */
+	new_key = mem_zalloc(sizeof(st->key_rx), NULL);
+	if (!new_key)
+		return ENOMEM;
 
 	olen = sizeof(st->key_rx);
-	err = base64_decode(key_info->p, key_info->l, st->key_rx, &olen);
-	if (err)
+	err = base64_decode(key_info->p, key_info->l, new_key, &olen);
+	if (err) {
+		mem_deref(new_key);
 		return err;
+	}
 
 	if (len != olen) {
-		warning("srtp: %s: srtp keylen is %u (should be %zu)\n",
-			st->crypto_suite, olen, len);
+		warning("srtp: %s: %s: srtp keylen is %u (should be %zu)\n",
+			stream_name(st->strm), st->crypto_suite, olen, len);
+		mem_deref(new_key);
+		return err;
 	}
+
+	if (olen > sizeof(st->key_rx)) {
+		warning("srtp: %s: received key exceeds max key length\n",
+			stream_name(st->strm));
+		mem_deref(new_key);
+		return ERANGE;
+	}
+
+	/* receiving key-info changed -> reset srtp_rx */
+	if (st->srtp_rx && mem_seccmp(st->key_rx, new_key,
+		sizeof(st->key_rx) > olen ? olen : sizeof(st->key_rx))) {
+		info("srtp: %s: re-keying in progress\n",
+			stream_name(st->strm));
+		mtx_lock(st->mtx_rx);
+		st->srtp_rx = mem_deref(st->srtp_rx);
+		mtx_unlock(st->mtx_rx);
+	}
+
+	memcpy(st->key_rx, new_key, olen);
+	mem_secclean(new_key, olen);
+	new_key = mem_deref(new_key);
 
 	err = start_srtp(st, st->crypto_suite);
 	if (err)
@@ -328,6 +399,15 @@ static bool sdp_attr_handler(const char *name, const char *value, void *arg)
 	if (!cryptosuite_issupported(&c.suite))
 		return false;
 
+	/* receiving crypto-suite changed -> reset srtp_rx */
+	if (st->srtp_rx && pl_strcmp(&c.suite, st->crypto_suite)) {
+		info ("srtp (%s-rx): cipher suite changed from %s to %r\n",
+			stream_name(st->strm), st->crypto_suite, &c.suite);
+		mtx_lock(st->mtx_rx);
+		st->srtp_rx = mem_deref(st->srtp_rx);
+		mtx_unlock(st->mtx_rx);
+	}
+
 	st->crypto_suite = mem_deref(st->crypto_suite);
 	pl_strdup(&st->crypto_suite, &c.suite);
 
@@ -337,6 +417,35 @@ static bool sdp_attr_handler(const char *name, const char *value, void *arg)
 	sdp_enc(st, st->sdpm, c.tag, st->crypto_suite);
 
 	return true;
+}
+
+
+static int media_txrekey(struct menc_media *m)
+{
+	const char *rattr = NULL;
+	struct menc_st *st = (struct menc_st *) m;
+	int err = 0;
+
+	if (!st)
+		return EINVAL;
+
+	mtx_lock(st->mtx_tx);
+	st->srtp_tx = mem_deref(st->srtp_tx);
+	mtx_unlock(st->mtx_tx);
+
+	rand_bytes(st->key_tx, sizeof(st->key_tx));
+
+	if (sdp_media_rattr(st->sdpm, "crypto")) {
+
+		rattr = sdp_media_rattr_apply(st->sdpm, "crypto",
+					      sdp_attr_handler, st);
+		if (!rattr) {
+			warning("srtp: no valid a=crypto attribute from"
+				" remote peer\n");
+		}
+	}
+
+	return err;
 }
 
 
@@ -393,6 +502,11 @@ static int media_alloc(struct menc_media **stp, struct menc_sess *sess,
 		if (!st)
 			return ENOMEM;
 
+		err  = mutex_alloc(&st->mtx_tx);
+		err |= mutex_alloc(&st->mtx_rx);
+		if (err)
+			return err;
+
 		st->sess = sess;
 		st->sdpm = mem_ref(sdpm);
 		st->strm = strm;
@@ -433,7 +547,7 @@ static int media_alloc(struct menc_media **stp, struct menc_sess *sess,
 	/* SDP handling */
 
 	if (sdp_media_rport(sdpm))
-		st->got_sdp = true;
+		re_atomic_rlx_set(&st->got_sdp, true);
 
 	if (sdp_media_rattr(st->sdpm, "crypto")) {
 
@@ -462,21 +576,24 @@ static struct menc menc_srtp_opt = {
 	.id        = "srtp",
 	.sdp_proto = "RTP/AVP",
 	.sessh     = session_alloc,
-	.mediah    = media_alloc
+	.mediah    = media_alloc,
+	.txrekeyh  = media_txrekey
 };
 
 static struct menc menc_srtp_mand = {
 	.id        = "srtp-mand",
 	.sdp_proto = "RTP/SAVP",
 	.sessh     = session_alloc,
-	.mediah    = media_alloc
+	.mediah    = media_alloc,
+	.txrekeyh  = media_txrekey
 };
 
 static struct menc menc_srtp_mandf = {
 	.id        = "srtp-mandf",
 	.sdp_proto = "RTP/SAVPF",
 	.sessh     = session_alloc,
-	.mediah    = media_alloc
+	.mediah    = media_alloc,
+	.txrekeyh  = media_txrekey
 };
 
 

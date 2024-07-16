@@ -124,6 +124,10 @@ extern const char test_certificate[];
 #endif
 
 
+void test_set_datapath(const char *path);
+const char *test_datapath(void);
+
+
 /*
  * Mock DNS-Server
  */
@@ -153,6 +157,8 @@ struct auplay;
 
 typedef void (mock_sample_h)(struct auframe *af, const char *dev, void *arg);
 
+void mock_aucodec_register(void);
+void mock_aucodec_unregister(void);
 int mock_auplay_register(struct auplay **auplayp, struct list *auplayl,
 			 mock_sample_h *sampleh, void *arg);
 
@@ -195,7 +201,6 @@ int test_aulevel(void);
 int test_call_answer(void);
 int test_call_answer_hangup_a(void);
 int test_call_answer_hangup_b(void);
-int test_call_aufilt(void);
 int test_call_aulevel(void);
 int test_call_custom_headers(void);
 int test_call_dtmf(void);
@@ -221,6 +226,10 @@ int test_call_ipv6ll(void);
 int test_call_100rel_audio(void);
 int test_call_100rel_video(void);
 int test_call_hold_resume(void);
+int test_call_srtp_tx_rekey(void);
+#ifdef USE_TLS
+int test_call_sni(void);
+#endif
 int test_cmd(void);
 int test_cmd_long(void);
 int test_contact(void);

@@ -13,6 +13,7 @@ sip_capath		/etc/ssl/certs
 #sip_trans_def		udp
 sip_verify_server	yes
 #sip_verify_client	no
+#sip_tls_resumption	all		# none, ids, tickets
 sip_tos			160 # See TOS fields!
 
 ## TOS fields ##
@@ -187,7 +188,6 @@ module_app		menu.so
 #module_app		ctrl_tcp.so
 module_app		ctrl_dbus.so
 #module_app		httpreq.so
-#module_app		multicast.so
 module_app		netroam.so
 
 
@@ -265,6 +265,10 @@ video_selfview		window # {window,pip}
 #avcodec_profile_level_id 42002a
 #avcodec_keyint		10      # keyframe interval in [sec]
 
+# vp8
+#vp8_enc_threads 1
+#vp8_enc_cpuused 16 # Range -16..16, greater 0 increases speed over quality
+
 # ctrl_dbus
 #ctrl_dbus_use	system		# system, session
 
@@ -292,14 +296,8 @@ video_selfview		window # {window,pip}
 #httpreq_cert		cert.pem
 #httpreq_key		key.pem
 
-# multicast receivers (in priority order)- port number must be even
-#multicast_call_prio	0
-#multicast_ttl		1
-#multicast_jbuf_type	fixed		# off, fixed, adaptive
-#multicast_jbuf_delay	5-10		# frames
-#multicast_jbuf_wish	6		# frames for start
-#multicast_listener	224.0.2.21:50000
-#multicast_listener	224.0.2.21:50002
-
 # avformat
 #avformat_pass_through	yes
+
+# webrtc_aec
+# webrtc_aec_extended_filter		yes

@@ -26,7 +26,6 @@ struct ua {
 	char *cuser;                 /**< SIP Contact username               */
 	char *pub_gruu;              /**< SIP Public GRUU                    */
 	enum presence_status pstat;  /**< Presence Status                    */
-	bool catchall;               /**< Catch all inbound requests         */
 	struct list hdr_filter;      /**< Filter for incoming headers        */
 	struct list custom_hdrs;     /**< List of outgoing headers           */
 	char *ansval;                /**< SIP auto answer value              */
@@ -636,26 +635,30 @@ static bool require_handler(const struct sip_hdr *hdr,
 }
 
 
-static int sdp_connection(struct mbuf *mb, int *af, struct sa *sa)
+static int sdp_connection(const struct mbuf *mb, int *af, struct sa *sa)
 {
 	struct pl pl1, pl2;
-	char *addr = NULL;
 	const struct network *net = baresip_network();
-	int err;
 
 	*af = AF_UNSPEC;
-	err = re_regex((char *)mbuf_buf(mb), mbuf_get_left(mb),
-		       "c=IN IP[46]1 [^ \r\n]+", &pl1, &pl2);
-	if (err)
-		return EINVAL;
 
-	pl_strdup(&addr, &pl2);
+	int err = re_regex((char *)mbuf_buf(mb), mbuf_get_left(mb),
+			   "c=IN IP[46]1 [^ \r\n]+", &pl1, &pl2);
+	if (err)
+		return err;
+
 	switch (pl1.p[0]) {
 
-	case '4': *af = AF_INET;
-		  break;
-	case '6': *af = AF_INET6;
-		  break;
+	case '4':
+		*af = AF_INET;
+		break;
+
+	case '6':
+		*af = AF_INET6;
+		break;
+
+	default:
+		return EAFNOSUPPORT;
 	}
 
 	/* OSX/iOS needs a port number for udp_connect() */
@@ -668,12 +671,14 @@ static int sdp_connection(struct mbuf *mb, int *af, struct sa *sa)
 	if (err)
 		goto out;
 
-	err = sa_set_str(sa, addr, pl_u32(&pl1));
+	err = sa_set(sa, &pl2, pl_u32(&pl1));
 	if (sa_af(sa) == AF_INET6 && sa_is_linklocal(sa))
 		err |= net_set_dst_scopeid(net, sa);
 
 out:
-	mem_deref(addr);
+	if (!err && !sa_isset(sa, SA_ADDR))
+	    return EINVAL;
+
 	return err;
 }
 
@@ -682,6 +687,7 @@ out:
 void sipsess_conn_handler(const struct sip_msg *msg, void *arg)
 {
 	struct config *config = conf_config();
+	const char magic_branch[] = RE_RFC3261_BRANCH_ID;
 	const struct sip_hdr *hdr;
 	struct ua *ua;
 	struct call *call = NULL;
@@ -693,6 +699,13 @@ void sipsess_conn_handler(const struct sip_msg *msg, void *arg)
 	debug("ua: sipsess connect via %s %J --> %J\n",
 	      sip_transp_name(msg->tp),
 	      &msg->src, &msg->dst);
+
+	if (pl_strncmp(&msg->via.branch, magic_branch, sizeof(magic_branch)-1)
+	    != 0) {
+		info("ua: received INVITE with incorrect Via branch.\n");
+		(void)sip_treply(NULL, uag_sip(), msg, 606, "Not Acceptable");
+		return;
+	}
 
 	ua = uag_find_msg(msg);
 	if (!ua) {
@@ -1337,10 +1350,8 @@ int ua_connect_dir(struct ua *ua, struct call **callp,
 	if (err)
 		goto out;
 
-	if (adir != SDP_SENDRECV || vdir != SDP_SENDRECV) {
-		call_set_media_estdir(call, adir, vdir);
+	if (adir != SDP_SENDRECV || vdir != SDP_SENDRECV)
 		call_set_media_direction(call, adir, vdir);
-	}
 
 	err = call_connect(call, &pl);
 
@@ -1881,7 +1892,10 @@ int ua_print_allowed(struct re_printf *pf, const struct ua *ua)
 
 	err = re_hprintf(pf,
 			 "INVITE,ACK,BYE,CANCEL,OPTIONS,"
-			 "NOTIFY,SUBSCRIBE,INFO,MESSAGE,UPDATE");
+			 "NOTIFY,INFO,MESSAGE,UPDATE");
+
+	if (uag_subh())
+		err |= re_hprintf(pf, ",SUBSCRIBE");
 
 	if (ua->acc->rel100_mode)
 		err |= re_hprintf(pf, ",PRACK");
@@ -1969,13 +1983,13 @@ void ua_set_catchall(struct ua *ua, bool enabled)
 	if (!ua)
 		return;
 
-	ua->catchall = enabled;
+	account_set_catchall(ua_account(ua), enabled);
 }
 
 
 bool ua_catchall(struct ua *ua)
 {
-	return ua ? ua->catchall : false;
+	return ua && ua->acc ? ua->acc->catchall : false;
 }
 
 

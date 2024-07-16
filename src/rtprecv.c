@@ -560,9 +560,6 @@ uint64_t rtprecv_ts_last(struct rtp_receiver *rx)
 
 	uint64_t ts_last;
 
-	if (!rx)
-		return 0;
-
 	mtx_lock(rx->mtx);
 	ts_last = rx->ts_last;
 	mtx_unlock(rx->mtx);
@@ -619,6 +616,12 @@ int rtprecv_get_ssrc(struct rtp_receiver *rx, uint32_t *ssrc)
 	mtx_unlock(rx->mtx);
 
 	return err;
+}
+
+
+struct jbuf *rtprecv_jbuf(struct rtp_receiver *rx)
+{
+	return rx ? rx->jbuf : NULL;
 }
 
 

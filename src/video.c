@@ -363,7 +363,7 @@ static int packet_handler(bool marker, uint64_t ts,
 
 	cnd_signal(&vtx->wait);
 
-	return err;
+	return 0;
 }
 
 
@@ -620,7 +620,7 @@ static int vtx_alloc(struct vtx *vtx, struct video *video)
 
 	vtx->fmt = (enum vidfmt)-1;
 
-	return err;
+	return 0;
 }
 
 
@@ -640,7 +640,7 @@ static int vrx_alloc(struct vrx *vrx, struct video *video)
 
 	vrx->fmt = (enum vidfmt)-1;
 
-	return err;
+	return 0;
 }
 
 
@@ -1275,9 +1275,8 @@ int video_update(struct video *v, const char *peer)
 
 	if (!sc) {
 		info("video: video stream is disabled..\n");
-		video_stop_source(v);
-		video_stop_display(v);
-		return err;
+		video_stop(v);
+		return 0;
 	}
 
 	if (dir & SDP_SENDONLY)
@@ -1287,10 +1286,12 @@ int video_update(struct video *v, const char *peer)
 		err |= video_decoder_set(v, sc->data, sc->pt, sc->rparams);
 
 	/* Stop / Start source & display*/
-	if (dir & SDP_SENDONLY)
+	if (dir & SDP_SENDONLY) {
 		err |= video_start_source(v);
-	else
+	}
+	else {
 		video_stop_source(v);
+	}
 
 	if (dir == SDP_RECVONLY)
 		stream_open_natpinhole(v->strm);
@@ -1299,8 +1300,10 @@ int video_update(struct video *v, const char *peer)
 
 	if (dir & SDP_RECVONLY) {
 		err |= video_start_display(v, peer);
+		stream_enable_rx(v->strm, true);
 	}
 	else {
+		stream_enable_rx(v->strm, false);
 		video_stop_display(v);
 	}
 
@@ -1379,6 +1382,7 @@ int video_start_source(struct video *v)
 		warning("video_start_source: Video TX already started\n");
 	}
 
+	stream_enable_tx(v->strm, true);
 	tmr_start(&v->tmr, TMR_INTERVAL * 1000, tmr_handler, v);
 
 	return 0;
@@ -1443,6 +1447,7 @@ static void video_stop_source(struct video *v)
 
 	debug("video: stopping video source ..\n");
 
+	stream_enable_tx(v->strm, false);
 	v->vtx.vsrc = mem_deref(v->vtx.vsrc);
 
 	if (re_atomic_rlx(&v->vtx.run)) {
