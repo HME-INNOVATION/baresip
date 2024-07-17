@@ -41,6 +41,7 @@ set(MODULES
   ice
   jack
   l16
+  ladspa
   menu
   mixausrc
   mixminus
