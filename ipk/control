@@ -1,0 +1,5 @@
+Package: baresip
+Version: 0.0 // Completed by jenkins publish process
+Architecture: armv7ahf-neon
+Maintainer: Tony Bussen <tbussen@hme.com>
+Description: baresip SIP agent

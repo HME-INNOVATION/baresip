@@ -1,0 +1,16 @@
+[Unit]
+Description=Baresip SIP client
+Wants=network-pre.target
+After=network-pre.target NetworkManager.service systemd-resolved.service
+
+[Service]
+Environment=LD_LIBRARY_PATH=/usr/local/lib
+Environment=GST_DEBUG=3
+Environment=HME_APP_DIR=/usr/bin/zoltar
+ExecStart=/usr/local/bin/baresip -f /home/root/.baresip
+Restart=on-failure
+RootDirectory=/
+WorkingDirectory=/usr/local/lib/baresip/modules
+
+[Install]
+WantedBy=multi-user.target

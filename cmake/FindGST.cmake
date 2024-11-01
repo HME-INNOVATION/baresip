@@ -5,6 +5,13 @@ find_path(GST_INCLUDE_DIR
   PATHS /usr/include/gstreamer-1.0
 )
 
+find_path(GST_PLUGINS_INCLUDE_DIR
+  NAMES gst/gstappsrc.h
+  HINTS
+    "${GST_PLUGINS_INCLUDE_DIRS}"
+  PATHS /usr/include/gstreamer-1.0
+)
+
 find_path(GL_INCLUDE_DIR
   NAMES glib.h
   HINTS
@@ -29,6 +36,20 @@ find_library(GST_LIBRARY
   PATHS /usr/lib/x86_64-linux-gnu
 )
 
+find_library(GST_APP_LIBRARY
+  NAMES libgstapp-1.0.so
+  HINTS
+    "${GST_APP_LIBRARY_DIRS}"
+  PATHS /usr/lib/x86_64-linux-gnu
+)
+
+find_library(GST_AUDIO_LIBRARY
+  NAMES libgstaudio-1.0.so
+  HINTS
+    "${GST_AUDIO_LIBRARY_DIRS}"
+  PATHS /usr/lib/x86_64-linux-gnu
+)
+
 find_library(GL_LIBRARY
   NAMES glib-2.0
   HINTS
@@ -38,9 +59,9 @@ find_library(GL_LIBRARY
 
 include(FindPackageHandleStandardArgs)
 
-if(GST_INCLUDE_DIR AND GL_INCLUDE_DIR AND GLIB_INCLUDE_DIR)
-  set(GST_INCLUDE_DIRS ${GST_INCLUDE_DIR} ${GL_INCLUDE_DIR} ${GLIB_INCLUDE_DIR})
-  set(GST_LIBRARIES  ${GST_LIBRARY} ${GL_LIBRARY})
+if(GST_INCLUDE_DIR AND GST_PLUGINS_INCLUDE_DIR AND GL_INCLUDE_DIR AND GLIB_INCLUDE_DIR)
+  set(GST_INCLUDE_DIRS ${GST_INCLUDE_DIR} ${GST_PLUGINS_INCLUDE_DIR} ${GL_INCLUDE_DIR} ${GLIB_INCLUDE_DIR})
+  set(GST_LIBRARIES  ${GST_LIBRARY} ${GST_APP_LIBRARY} ${GST_AUDIO_LIBRARY} ${GL_LIBRARY})
   set(GST_FOUND ON)
 else()
   set(GST_INCLUDE_DIRS "")

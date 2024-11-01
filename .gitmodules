@@ -1,0 +1,12 @@
+[submodule "modules/ladspa"]
+	path = modules/ladspa
+	url = git@github.com:HME-INNOVATION/ladspa.git
+[submodule "modules/nexeo_ib"]
+	path = modules/nexeo_ib
+	url = git@github.com:HME-INNOVATION/nexeo_ib.git
+[submodule "modules/nexeo_ib_rtp"]
+	path = modules/nexeo_ib_rtp
+	url = git@github.com:HME-INNOVATION/nexeo_ib_rtp.git
+[submodule "modules/nexeo_zms"]
+	path = modules/nexeo_zms
+	url = git@github.com:HME-INNOVATION/nexeo_zms.git

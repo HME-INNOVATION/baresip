@@ -43,6 +43,7 @@ set(MODULES
   in_band_dtmf
   jack
   l16
+  ladspa
   menu
   mixausrc
   mixminus
@@ -51,6 +52,9 @@ set(MODULES
   mwi
   natpmp
   netroam
+  nexeo_ib
+  nexeo_ib_rtp
+  nexeo_zms
   opensles
   opus
   opus_multistream
